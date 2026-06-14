@@ -40,6 +40,15 @@ async function ensureOffscreen() {
   }
 }
 
+// Keep Service Worker alive via persistent port from offscreen document
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'keepalive') {
+    port.onDisconnect.addListener(() => {
+      // offscreen closed, no action needed
+    });
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === 'appId') {

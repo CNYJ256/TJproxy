@@ -188,4 +188,7 @@ function scheduleReconnect() {
   }, reconnectDelay);
 }
 
+// Keep background Service Worker alive via persistent port
+chrome.runtime.connect({ name: 'keepalive' });
+
 connect();
