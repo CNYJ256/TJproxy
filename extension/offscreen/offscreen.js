@@ -1,10 +1,16 @@
 const WS_URL = 'ws://localhost:8765';
 const API_URL = 'https://agent.tongji.edu.cn/api/bypass/app/?Version=2023-08-01&Action=ChatQueryInAppCenter';
+const {
+  buildBridgeUrl,
+  buildChatRequest,
+  parseSSELine,
+} = globalThis.TJproxyOffscreenUtils;
 
 let ws = null;
 let reconnectDelay = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 let reconnectTimer = null;
+let connecting = false;
 
 async function getCookies() {
   return new Promise((resolve) => {
@@ -20,47 +26,12 @@ async function getAppId() {
   });
 }
 
-function parseSSELine(state, line) {
-  const trimmed = line.trim();
-  const tokens = [];
-  let isDone = false;
-
-  if (trimmed === '') {
-    return { tokens, isDone };
-  }
-
-  if (trimmed.startsWith('event:')) {
-    state.lastEvent = trimmed.slice(6).trim();
-    return { tokens, isDone };
-  }
-
-  if (trimmed.startsWith('data:')) {
-    let jsonStr = trimmed.slice(5).trim();
-    // 同济 API 有双重 data: 前缀 (data:data: {...})
-    if (jsonStr.startsWith('data: ')) {
-      jsonStr = jsonStr.slice(6).trim();
-    }
-    if (!jsonStr) {
-      return { tokens, isDone };
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(jsonStr);
-    } catch {
-      return { tokens, isDone };
-    }
-
-    const eventType = parsed.event || state.lastEvent;
-
-    if (eventType === 'message' && typeof parsed.answer === 'string') {
-      tokens.push(parsed.answer);
-    } else if (eventType === 'message_end') {
-      isDone = true;
-    }
-  }
-
-  return { tokens, isDone };
+async function getBridgeToken() {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'getBridgeToken' }, (resp) => {
+      resolve(resp?.token ?? null);
+    });
+  });
 }
 
 function send(ws, data) {
@@ -86,20 +57,7 @@ async function handleChat(ws, message) {
 
   let response;
   try {
-    response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-csrf-token': csrf,
-        'Cookie': cookieHeader,
-      },
-      body: JSON.stringify({
-        Query: message,
-        AppID: appId,
-        InputData: [],
-        QueryExtends: { Files: [] },
-      }),
-    });
+    response = await fetch(API_URL, buildChatRequest(message, appId, csrf, cookieHeader));
   } catch (err) {
     send(ws, { type: 'error', message: '网络请求失败' });
     return;
@@ -145,14 +103,23 @@ async function handleChat(ws, message) {
   }
 }
 
-function connect() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+async function connect() {
+  if (connecting || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) {
     return;
   }
 
-  ws = new WebSocket(WS_URL);
+  connecting = true;
+  const token = await getBridgeToken();
+  if (!token) {
+    connecting = false;
+    scheduleReconnect();
+    return;
+  }
+
+  ws = new WebSocket(buildBridgeUrl(WS_URL, token));
 
   ws.onopen = () => {
+    connecting = false;
     reconnectDelay = 1000;
   };
 
@@ -170,6 +137,7 @@ function connect() {
   };
 
   ws.onclose = () => {
+    connecting = false;
     ws = null;
     scheduleReconnect();
   };
@@ -183,7 +151,7 @@ function scheduleReconnect() {
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    connect();
+    void connect();
     reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
   }, reconnectDelay);
 }
@@ -191,4 +159,4 @@ function scheduleReconnect() {
 // Keep background Service Worker alive via persistent port
 chrome.runtime.connect({ name: 'keepalive' });
 
-connect();
+void connect();

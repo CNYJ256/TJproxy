@@ -1,14 +1,11 @@
 (function () {
-  const APPID_REGEX = /application\/([^/]+)\/chat/;
+  const { extractAppId, observeNavigation } = globalThis.TJproxyContentUtils;
 
   function extractAndSend() {
-    const match = location.href.match(APPID_REGEX);
-    const appId = match ? match[1] : null;
+    const appId = extractAppId(location.href);
     chrome.runtime.sendMessage({ type: 'appId', data: { appId } });
   }
 
   extractAndSend();
-
-  window.addEventListener('popstate', extractAndSend);
-  window.addEventListener('hashchange', extractAndSend);
+  observeNavigation(window, extractAndSend);
 })();

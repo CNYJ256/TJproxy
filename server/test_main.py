@@ -16,6 +16,7 @@ Error HTTP status codes:
 
 import json
 import asyncio
+import socket
 from http import HTTPStatus
 
 import pytest
@@ -23,7 +24,15 @@ import requests
 import websockets
 from websockets.asyncio.client import connect
 
-from conftest import SERVER_URL, WS_URL, SERVER_HOST, SERVER_PORT
+from conftest import (
+    BRIDGE_TOKEN,
+    EXTENSION_ORIGIN,
+    SERVER_HOST,
+    SERVER_PORT,
+    SERVER_URL,
+    WS_BASE_URL,
+    WS_URL,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +43,20 @@ from conftest import SERVER_URL, WS_URL, SERVER_HOST, SERVER_PORT
 @pytest.fixture
 async def ws_client():
     """Connect a single WebSocket client and yield it."""
-    async with connect(WS_URL) as ws:
+    async with connect(WS_URL, origin=EXTENSION_ORIGIN) as ws:
         yield ws
+
+
+def _raw_http(request: bytes) -> bytes:
+    with socket.create_connection((SERVER_HOST, SERVER_PORT), timeout=5) as sock:
+        sock.sendall(request)
+        sock.shutdown(socket.SHUT_WR)
+        chunks = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +172,111 @@ async def test_http_chat_sse(ws_client):
     assert any("你" in line for line in lines), f"SSE lines: {lines}"
     assert any("好" in line for line in lines), f"SSE lines: {lines}"
     assert any("[DONE]" in line for line in lines), f"SSE lines: {lines}"
+
+
+@pytest.mark.asyncio
+async def test_chat_requests_are_serialized(ws_client):
+    """A second HTTP request waits until the first browser chat completes."""
+    ws = ws_client
+
+    async def post(message):
+        return await asyncio.to_thread(
+            requests.post,
+            f"{SERVER_URL}/chat",
+            json={"message": message},
+            timeout=5,
+        )
+
+    first_http = asyncio.create_task(post("first"))
+    first_chat = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+    assert first_chat["message"] == "first"
+
+    second_http = asyncio.create_task(post("second"))
+    try:
+        premature = await asyncio.wait_for(ws.recv(), timeout=0.25)
+    except asyncio.TimeoutError:
+        premature = None
+
+    await ws.send(json.dumps({"type": "done"}))
+
+    if premature is None:
+        second_chat = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+    else:
+        second_chat = json.loads(premature)
+    await ws.send(json.dumps({"type": "done"}))
+
+    first_resp, second_resp = await asyncio.gather(first_http, second_http)
+    assert premature is None, "second request reached the extension before the first completed"
+    assert second_chat["message"] == "second"
+    assert first_resp.status_code == HTTPStatus.OK
+    assert second_resp.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_multiline_token_is_valid_sse(ws_client):
+    ws = ws_client
+
+    async def handle_ws():
+        await ws.recv()
+        await ws.send(json.dumps({"type": "token", "content": "line 1\nline 2"}))
+        await ws.send(json.dumps({"type": "done"}))
+
+    ws_task = asyncio.create_task(handle_ws())
+    resp = await asyncio.to_thread(
+        requests.post,
+        f"{SERVER_URL}/chat",
+        json={"message": "multiline"},
+        timeout=5,
+    )
+    await ws_task
+
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.text.splitlines()[:3] == ["data: line 1", "data: line 2", ""]
+
+
+def test_http_header_without_space_after_colon_is_parsed():
+    body = b'{"message":"hello"}'
+    response = _raw_http(
+        b"POST /chat HTTP/1.1\r\n"
+        b"Host:localhost\r\n"
+        b"Content-Type:application/json\r\n"
+        + f"Content-Length:{len(body)}\r\n".encode()
+        + b"Connection:close\r\n\r\n"
+        + body
+    )
+
+    assert response.startswith(b"HTTP/1.1 503"), response
+
+
+@pytest.mark.asyncio
+async def test_websocket_requires_bridge_path():
+    with pytest.raises(websockets.exceptions.InvalidStatus) as exc:
+        async with connect(
+            f"{WS_BASE_URL}/?token={BRIDGE_TOKEN}", origin=EXTENSION_ORIGIN
+        ):
+            pass
+    assert exc.value.response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_websocket_requires_extension_origin():
+    with pytest.raises(websockets.exceptions.InvalidStatus) as exc:
+        async with connect(WS_URL, origin="http://example.com"):
+            pass
+    assert exc.value.response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_websocket_rejects_token_change():
+    async with connect(WS_URL, origin=EXTENSION_ORIGIN):
+        pass
+
+    with pytest.raises(websockets.exceptions.InvalidStatus) as exc:
+        async with connect(
+            f"{WS_BASE_URL}/bridge?token=wrong-token", origin=EXTENSION_ORIGIN
+        ):
+            pass
+    assert exc.value.response.status_code == HTTPStatus.FORBIDDEN
 
 
 # ---------------------------------------------------------------------------

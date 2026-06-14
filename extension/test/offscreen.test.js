@@ -17,68 +17,13 @@
 
 import { describe, it, expect } from 'vitest';
 
-// ---------------------------------------------------------------------------
-// parseSSELine — replica of the offscreen.js parsing function
-// ---------------------------------------------------------------------------
+import '../lib/offscreen-utils.js';
 
-/**
- * Parse a single SSE text line, maintaining state across calls.
- *
- * State tracked internally:
- *   - lastEvent: the most recent "event:" line value
- *
- * @param {Object} state  — mutable state object { lastEvent }
- * @param {string} line   — one line from the SSE stream (not trimmed)
- * @returns {{ tokens: string[], isDone: boolean }}
- */
-function parseSSELine(state, line) {
-  const trimmed = line.trim();
-  const tokens = [];
-  let isDone = false;
-
-  // Empty lines are SSE boundaries — they don't affect parsing.
-  if (trimmed === '') {
-    return { tokens, isDone };
-  }
-
-  // "event:" line records the event type for the next "data:" line(s).
-  if (trimmed.startsWith('event:')) {
-    state.lastEvent = trimmed.slice(6).trim();
-    return { tokens, isDone };
-  }
-
-  // "data:" line carries the payload.
-  if (trimmed.startsWith('data:')) {
-    let jsonStr = trimmed.slice(5).trim();
-    // Handle double data: prefix from Tongji API (data:data: {...})
-    if (jsonStr.startsWith('data: ')) {
-      jsonStr = jsonStr.slice(6).trim();
-    }
-    if (!jsonStr) {
-      return { tokens, isDone };
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(jsonStr);
-    } catch {
-      return { tokens, isDone };
-    }
-
-    const eventType = parsed.event || state.lastEvent;
-
-    if (eventType === 'message' && typeof parsed.answer === 'string') {
-      tokens.push(parsed.answer);
-    } else if (eventType === 'message_end') {
-      isDone = true;
-    }
-    // message_start, think_message, and others are silently ignored.
-  }
-
-  // Any other line type (id:, retry:, comments starting with ':') is ignored.
-
-  return { tokens, isDone };
-}
+const {
+  buildBridgeUrl,
+  buildChatRequest,
+  parseSSELine,
+} = globalThis.TJproxyOffscreenUtils;
 
 function freshState() {
   return { lastEvent: null };
@@ -290,5 +235,26 @@ describe('parseSSELine — double data: prefix', () => {
     const result = parseSSELine(state, 'data:data: {"event":"think_message","answer":"thinking"}');
     expect(result.tokens).toEqual([]);
     expect(result.isDone).toBe(false);
+  });
+});
+
+describe('buildBridgeUrl', () => {
+  it('adds the fixed bridge path and encoded token', () => {
+    expect(buildBridgeUrl('ws://localhost:8765', 'a token/+')).toBe(
+      'ws://localhost:8765/bridge?token=a%20token%2F%2B'
+    );
+  });
+});
+
+describe('buildChatRequest', () => {
+  it('preserves the initial working manual Cookie header behavior', () => {
+    const options = buildChatRequest('hello', 'app-1', 'csrf-value', 'tenant=abc');
+
+    expect(options.headers).toEqual({
+      'Content-Type': 'application/json',
+      'x-csrf-token': 'csrf-value',
+      'Cookie': 'tenant=abc',
+    });
+    expect(JSON.parse(options.body)).toMatchObject({ Query: 'hello', AppID: 'app-1' });
   });
 });

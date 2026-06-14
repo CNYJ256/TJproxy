@@ -21,7 +21,7 @@ Browser                          localhost:8765                       Your Scrip
 ```
 
 1. **Chrome Extension**：注入 `agent.tongji.edu.cn` 页面，提取 `appId` 和认证 Cookie；由 offscreen 页维护到 Python 服务的 WebSocket 长连接。
-2. **Python Server**：监听 `localhost:8765`，接收 Extension 的 WS 连接，对外提供 HTTP 接口；将 HTTP 请求转发给 Extension，后者调用同济 API，返回流式 token。
+2. **Python Server**：监听 `localhost:8765`，接收 Extension 的 WS 连接，对外提供 HTTP 接口；将 HTTP 请求串行排队后转发给 Extension，后者调用同济 API，返回流式 token。
 3. **Your Script**：通过标准 HTTP POST 或 OpenAI SDK 与本地服务交互。
 
 ---
@@ -47,7 +47,7 @@ pip install -r server/requirements.txt
 
 | 包 | 用途 |
 |---|---|
-| `websockets` | 备用 WebSocket 支持 |
+| `websockets` | 服务端集成测试的 WebSocket 客户端 |
 | `requests` | 测试脚本 / SDK 示例 |
 | `pytest` / `pytest-asyncio` | 测试运行器 |
 
@@ -59,8 +59,6 @@ pip install -r server/requirements.txt
 4. 选择 `D:\repos\TJproxy\extension\` 目录
 
 加载后你会在扩展列表看到 **"TJproxy Bridge"**。
-
-> 也可以直接使用根目录下的 `extension.zip`（解压后加载）。
 
 ### 3. 启动 Python 服务
 
@@ -87,6 +85,8 @@ https://agent.tongji.edu.cn/application/<appId>/chat
 ```
 
 Extension 会自动提取该页面的 `appId` 并建立到 Python 服务的 WebSocket 连接。此后你的 HTTP 请求会被路由到该应用。
+
+桥接连接使用扩展自动生成并持久化的本地令牌，只接受 `chrome-extension://` 来源。由于上游本质上是单一浏览器对话页，同时到达的 HTTP 对话请求会在服务端排队执行。
 
 ---
 
@@ -237,6 +237,17 @@ for chunk in stream:
 
 将两处改为相同新端口后，重新加载插件并重启服务。
 
+## 运行测试
+
+```bash
+python -m pytest server -q
+cd extension
+npm ci
+npm test
+```
+
+Python 3.11 及以上均可运行服务；测试命令中的解释器可按本机环境替换，但需先安装 `server/requirements.txt`。
+
 ---
 
 ## 故障排除
@@ -254,10 +265,10 @@ for chunk in stream:
 
 ## 技术实现说明
 
-- **服务端**（`server/main.py`）：纯 Python 标准库实现（`asyncio` + 内置模块），不依赖任何 Web 框架。自行处理 HTTP/1.1 请求路由、WebSocket 协议（握手、帧编解码）、SSE 格式化、OpenAI 兼容响应生成。单文件，约 650 行。
+- **服务端**（`server/main.py`）：纯 Python 标准库实现（`asyncio` + 内置模块），不依赖任何 Web 框架。自行处理 HTTP/1.1 请求路由、WebSocket 协议（握手、帧编解码）、SSE 格式化、OpenAI 兼容响应生成，并用单一异步锁串行处理对话请求。
 - **插件端**（`extension/`）：Chrome Manifest V3 架构。
   - `content.js`：注入 `agent.tongji.edu.cn` 页面，提取 URL 中的 `appId` 并通知 background。
-  - `background.js`（Service Worker）：管理 offscreen 文档生命周期，提供 Cookie 读取代理（MV3 下 Service Worker 无法直接访问 `document.cookie`）。
+  - `background.js`（Service Worker）：管理 offscreen 文档生命周期，持久化 AppID 与桥接令牌，并提供 Cookie 读取代理。
   - `offscreen/offscreen.js`：维护到 Python 服务的 WebSocket 长连接，接收 chat 指令后调用同济 SSE API，将 token 逐条回传。带指数退避自动重连。
 - **API 设计**：`POST /chat` 返回原始 SSE token 流；`POST /v1/chat/completions` 兼容 OpenAI Chat Completions API，支持 `stream` 参数控制流式/非流式。
 
@@ -279,6 +290,5 @@ TJproxy/
 │   ├── main.py              # Python 服务入口（单文件）
 │   ├── requirements.txt     # Python 依赖
 │   └── test_main.py         # 服务端测试
-├── extension.zip            # 打包好的插件
 └── README.md
 ```

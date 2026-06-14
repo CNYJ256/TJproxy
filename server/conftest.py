@@ -20,9 +20,12 @@ from websockets.asyncio.client import ClientConnection
 # ---------------------------------------------------------------------------
 
 SERVER_HOST = "localhost"
-SERVER_PORT = 8765
+SERVER_PORT = 18765
 SERVER_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
-WS_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}"
+BRIDGE_TOKEN = "test-bridge-token"
+EXTENSION_ORIGIN = "chrome-extension://tjproxy-tests"
+WS_BASE_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}"
+WS_URL = f"{WS_BASE_URL}/bridge?token={BRIDGE_TOKEN}"
 
 
 @pytest.fixture(scope="session")
@@ -53,9 +56,12 @@ def server():
     if not main_py.exists():
         pytest.skip("main.py not yet implemented — tests serve as spec only")
 
+    env = os.environ.copy()
+    env["TJPROXY_PORT"] = str(SERVER_PORT)
     proc = subprocess.Popen(
         [sys.executable, str(main_py)],
         cwd=str(server_dir),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

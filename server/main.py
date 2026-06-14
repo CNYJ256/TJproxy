@@ -14,11 +14,15 @@ import os
 import struct
 import sys
 import time
-from http import HTTPStatus
+from urllib.parse import parse_qs, urlsplit
 
 HOST = "localhost"
-PORT = 8765
+PORT = int(os.environ.get("TJPROXY_PORT", "8765"))
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WS_PATH = "/bridge"
+MAX_REQUEST_LINE = 8192
+MAX_HEADER_BYTES = 32768
+MAX_BODY_BYTES = 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +34,8 @@ WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 _ws_writer = None         # asyncio.StreamWriter for the connected WS client
 _pending_queue = None     # asyncio.Queue for the current in-flight HTTP request
+_bridge_token = None      # Trust-on-first-use token supplied by the Extension
+_chat_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +89,9 @@ async def _send_http(writer: asyncio.StreamWriter, status: int, reason: str,
 
 def _sse_line(text: str) -> bytes:
     """Format one SSE data event."""
-    return f"data: {text}\n\n".encode()
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    fields = "".join(f"data: {line}\n" for line in normalized.split("\n"))
+    return f"{fields}\n".encode()
 
 
 async def _send_sse_header(writer: asyncio.StreamWriter, status: int,
@@ -232,7 +240,14 @@ async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
     global _pending_queue
 
     # Read body
-    content_length = int(headers.get("content-length", 0))
+    try:
+        content_length = int(headers.get("content-length", 0))
+    except ValueError:
+        await _send_http(writer, 400, "Bad Request")
+        return
+    if content_length < 0 or content_length > MAX_BODY_BYTES:
+        await _send_http(writer, 413, "Content Too Large")
+        return
     body = b""
     if content_length > 0:
         body = await _read_exactly(reader, content_length)
@@ -345,7 +360,14 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
     global _pending_queue
 
     # Read body
-    content_length = int(headers.get("content-length", 0))
+    try:
+        content_length = int(headers.get("content-length", 0))
+    except ValueError:
+        await _send_openai_error(writer, 400, "Invalid Content-Length")
+        return
+    if content_length < 0 or content_length > MAX_BODY_BYTES:
+        await _send_openai_error(writer, 413, "Request body too large")
+        return
     body = b""
     if content_length > 0:
         body = await _read_exactly(reader, content_length)
@@ -523,12 +545,30 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
 
 
 async def _handle_ws(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
-                     headers: dict) -> None:
+                     headers: dict, query: str) -> bool:
     """Perform WebSocket upgrade, then relay Extension messages to HTTP."""
-    global _ws_writer, _pending_queue
+    global _ws_writer, _pending_queue, _bridge_token
+
+    origin = headers.get("origin", "")
+    if not origin.startswith("chrome-extension://"):
+        await _send_http(writer, 403, "Forbidden")
+        return False
+
+    tokens = parse_qs(query).get("token", [])
+    token = tokens[0] if len(tokens) == 1 else ""
+    if not token or (_bridge_token is not None and token != _bridge_token):
+        await _send_http(writer, 403, "Forbidden")
+        return False
+
+    if _ws_writer is not None and not _ws_writer.is_closing():
+        await _send_http(writer, 409, "Conflict")
+        return False
 
     # Handshake
     key = headers.get("sec-websocket-key", "")
+    if not key:
+        await _send_http(writer, 400, "Bad Request")
+        return False
     accept = base64.b64encode(
         hashlib.sha1(key.encode() + WS_GUID).digest()
     ).decode()
@@ -543,6 +583,7 @@ async def _handle_ws(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     writer.write(handshake.encode())
     await writer.drain()
 
+    _bridge_token = token
     _ws_writer = writer
 
     try:
@@ -587,6 +628,8 @@ async def _handle_ws(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
         except Exception:
             pass
 
+    return True
+
 
 # ---------------------------------------------------------------------------
 # Main connection dispatch
@@ -602,32 +645,50 @@ async def handle_client(reader: asyncio.StreamReader,
         request_line = await reader.readline()
         if not request_line:
             return
+        if len(request_line) > MAX_REQUEST_LINE:
+            await _send_http(writer, 414, "URI Too Long")
+            return
 
         parts = request_line.decode(errors="replace").strip().split()
-        if len(parts) < 2:
+        if len(parts) != 3:
+            await _send_http(writer, 400, "Bad Request")
             return
-        method, path = parts[0].upper(), parts[1]
+        method, target = parts[0].upper(), parts[1]
+        parsed_target = urlsplit(target)
+        path = parsed_target.path
 
         # Read headers
         headers: dict[str, str] = {}
+        header_bytes = 0
         while True:
             line = await reader.readline()
             if line in (b"\r\n", b"\n", b""):
                 break
+            header_bytes += len(line)
+            if header_bytes > MAX_HEADER_BYTES:
+                await _send_http(writer, 431, "Request Header Fields Too Large")
+                return
             line_str = line.decode(errors="replace").strip()
-            if ": " in line_str:
-                k, v = line_str.split(": ", 1)
-                headers[k.lower()] = v
+            if ":" not in line_str:
+                await _send_http(writer, 400, "Bad Request")
+                return
+            k, v = line_str.split(":", 1)
+            headers[k.strip().lower()] = v.strip()
 
         # Route
         upgrade = headers.get("upgrade", "").lower()
         if upgrade == "websocket":
-            is_websocket = True
-            await _handle_ws(reader, writer, headers)
+            if path != WS_PATH:
+                await _send_http(writer, 404, "Not Found")
+            else:
+                is_websocket = await _handle_ws(
+                    reader, writer, headers, parsed_target.query)
         elif method == "POST" and path == "/chat":
-            await _handle_chat(reader, writer, headers)
+            async with _chat_lock:
+                await _handle_chat(reader, writer, headers)
         elif method == "POST" and path == "/v1/chat/completions":
-            await _handle_chat_completions(reader, writer, headers)
+            async with _chat_lock:
+                await _handle_chat_completions(reader, writer, headers)
         elif method == "GET" and path == "/v1/models":
             models_json = json.dumps({
                 "object": "list",
@@ -639,8 +700,10 @@ async def handle_client(reader: asyncio.StreamReader,
             await _send_http(writer, 200, "OK", body=b"OK")
         else:
             await _send_http(writer, 404, "Not Found")
-    except Exception:
-        pass
+    except Exception as exc:
+        peer = writer.get_extra_info("peername")
+        print(f"[TJproxy] connection error from {peer}: {exc}",
+              file=sys.stderr, flush=True)
     finally:
         if not is_websocket:
             try:

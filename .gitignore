@@ -1,2 +1,9 @@
 .playwright-mcp
 docs
+node_modules/
+.vite/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+coverage/
+dist/

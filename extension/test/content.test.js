@@ -4,22 +4,11 @@
 //   URL format: https://agent.tongji.edu.cn/product/llm/mall/application/{APPID}/chat
 //   Regex: /application/([^/]+)/chat
 //
-// These tests verify extraction logic in isolation; they do NOT import
-// the real content.js (which runs in a browser context).  Instead they
-// exercise the same regex and extraction pattern.
+import { describe, it, expect, vi } from 'vitest';
 
-import { describe, it, expect } from 'vitest';
+import '../lib/content-utils.js';
 
-/**
- * Replica of the extraction logic that content.js will use.
- * content.js reads location.href and runs this regex.
- */
-const APPID_REGEX = /application\/([^/]+)\/chat/;
-
-function extractAppId(url) {
-  const match = url.match(APPID_REGEX);
-  return match ? match[1] : null;
-}
+const { extractAppId, observeNavigation } = globalThis.TJproxyContentUtils;
 
 // ---------------------------------------------------------------------------
 // Happy path
@@ -110,5 +99,32 @@ describe('AppID extraction — edge cases', () => {
   it('does not treat application as part of the AppID', () => {
     const url = 'https://agent.tongji.edu.cn/product/llm/mall/application/real-app-id/chat';
     expect(extractAppId(url)).toBe('real-app-id');
+  });
+});
+
+describe('SPA navigation observation', () => {
+  it('notifies once when the page URL changes', () => {
+    const listeners = new Map();
+    let poll;
+    const target = {
+      location: { href: 'https://agent.tongji.edu.cn/application/app-a/chat' },
+      addEventListener: vi.fn((name, callback) => listeners.set(name, callback)),
+      removeEventListener: vi.fn((name) => listeners.delete(name)),
+      setInterval: vi.fn((callback) => {
+        poll = callback;
+        return 42;
+      }),
+      clearInterval: vi.fn(),
+    };
+    const notify = vi.fn();
+
+    const stop = observeNavigation(target, notify);
+    target.location.href = 'https://agent.tongji.edu.cn/application/app-b/chat';
+    poll();
+    poll();
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    stop();
+    expect(target.clearInterval).toHaveBeenCalledWith(42);
   });
 });

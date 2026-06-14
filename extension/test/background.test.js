@@ -1,214 +1,109 @@
-// test_background.js — Tests for background.js Service Worker functions
-//
-// Targets:
-//   getCookies()        → { cookieHeader, csrf }
-//   ensureOffscreen()   → createDocument if missing, idempotent
-//   getAppId()          → string | null
-//
-// All chrome.* APIs are mocked; tests run in Node with vitest.
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import '../lib/background-utils.js';
 
-// ---------------------------------------------------------------------------
-// Mock chrome API
-// ---------------------------------------------------------------------------
-// We must mock chrome before the code under test uses it.
-const mockChrome = {
-  cookies: {
-    getAll: vi.fn(),
-  },
-  offscreen: {
-    hasDocument: vi.fn(),
-    createDocument: vi.fn(),
-  },
-};
+const {
+  ensureOffscreen,
+  getAppId,
+  getBridgeToken,
+  getCookies,
+  setAppId,
+} = globalThis.TJproxyBackgroundUtils;
 
-// Make chrome available as a global (mimic extension environment)
-globalThis.chrome = mockChrome;
-
-// ---------------------------------------------------------------------------
-// getCookies implementation (replica of the logic in background.js)
-// ---------------------------------------------------------------------------
-
-/**
- * Replica of background.js getCookies().
- * Uses chrome.cookies.getAll({domain: "agent.tongji.edu.cn"}) to collect
- * cookies, assembles a Cookie header string, and extracts the csrf token.
- */
-async function getCookies() {
-  const cookies = await chrome.cookies.getAll({ url: 'https://agent.tongji.edu.cn/' });
-  const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
-  const csrf = cookies.find((c) => c.name === 'x-csrf-token')?.value ?? '';
-  return { cookieHeader, csrf };
+function createStorage(initial = {}) {
+  const values = { ...initial };
+  return {
+    get: vi.fn(async (key) => ({ [key]: values[key] })),
+    set: vi.fn(async (updates) => Object.assign(values, updates)),
+    remove: vi.fn(async (key) => delete values[key]),
+  };
 }
 
-// ---------------------------------------------------------------------------
-// ensureOffscreen implementation
-// ---------------------------------------------------------------------------
-async function ensureOffscreen() {
-  const hasDoc = await chrome.offscreen.hasDocument();
-  if (!hasDoc) {
-    await chrome.offscreen.createDocument({
-      url: 'offscreen/offscreen.html',
-      reasons: ['IFRAME_SCRIPTING'],
-      justification: 'Maintain long-lived WebSocket connection',
-    });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// getAppId (simplified — in reality stored via message from content.js)
-// ---------------------------------------------------------------------------
-let storedAppId = null;
-
-function setAppId(id) {
-  storedAppId = id;
-}
-
-function getAppId() {
-  return storedAppId;
-}
-
-// ---------------------------------------------------------------------------
-// Tests: getCookies
-// ---------------------------------------------------------------------------
 describe('getCookies', () => {
+  const cookiesApi = { get: vi.fn(), getAll: vi.fn() };
+
   beforeEach(() => {
     vi.resetAllMocks();
+    cookiesApi.get.mockResolvedValue(null);
   });
 
-  it('assembles cookieHeader from returned cookies', async () => {
-    mockChrome.cookies.getAll.mockResolvedValue([
+  it('assembles the Cookie header and extracts the csrf token', async () => {
+    cookiesApi.getAll.mockResolvedValue([
       { name: 'token', value: 'abc123' },
-      { name: 'session', value: 'xyz789' },
-      { name: 'x-csrf-token', value: 'csrf-token-value' },
+      { name: 'x-csrf-token', value: 'csrf-value' },
     ]);
 
-    const result = await getCookies();
-
-    expect(result.cookieHeader).toBe('token=abc123; session=xyz789; x-csrf-token=csrf-token-value');
-  });
-
-  it('extracts csrf from the x-csrf-token cookie', async () => {
-    mockChrome.cookies.getAll.mockResolvedValue([
-      { name: 'x-csrf-token', value: 'my-csrf-123' },
-      { name: 'other', value: 'ignored' },
-    ]);
-
-    const result = await getCookies();
-
-    expect(result.csrf).toBe('my-csrf-123');
-  });
-
-  it('returns empty csrf when x-csrf-token cookie is absent', async () => {
-    mockChrome.cookies.getAll.mockResolvedValue([
-      { name: 'other', value: 'ignored' },
-    ]);
-
-    const result = await getCookies();
-
-    expect(result.csrf).toBe('');
-  });
-
-  it('passes the correct URL filter to chrome.cookies.getAll', async () => {
-    mockChrome.cookies.getAll.mockResolvedValue([]);
-
-    await getCookies();
-
-    expect(mockChrome.cookies.getAll).toHaveBeenCalledTimes(1);
-    expect(mockChrome.cookies.getAll).toHaveBeenCalledWith({
+    await expect(getCookies(cookiesApi)).resolves.toEqual({
+      cookieHeader: 'token=abc123; x-csrf-token=csrf-value',
+      csrf: 'csrf-value',
+    });
+    expect(cookiesApi.getAll).toHaveBeenCalledWith({
       url: 'https://agent.tongji.edu.cn/',
     });
   });
 
-  it('returns empty cookieHeader when no cookies are found', async () => {
-    mockChrome.cookies.getAll.mockResolvedValue([]);
-
-    const result = await getCookies();
-
-    expect(result.cookieHeader).toBe('');
-    expect(result.csrf).toBe('');
-  });
-
-  it('handles single cookie correctly', async () => {
-    mockChrome.cookies.getAll.mockResolvedValue([
-      { name: 'only', value: 'lonely' },
-    ]);
-
-    const result = await getCookies();
-
-    expect(result.cookieHeader).toBe('only=lonely');
+  it('returns empty values when no cookies exist', async () => {
+    cookiesApi.getAll.mockResolvedValue([]);
+    await expect(getCookies(cookiesApi)).resolves.toEqual({
+      cookieHeader: '',
+      csrf: '',
+    });
   });
 });
 
-// ---------------------------------------------------------------------------
-// Tests: ensureOffscreen
-// ---------------------------------------------------------------------------
 describe('ensureOffscreen', () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+  const offscreenApi = {
+    hasDocument: vi.fn(),
+    createDocument: vi.fn(),
+  };
+
+  beforeEach(() => vi.resetAllMocks());
+
+  it('creates the offscreen document only when missing', async () => {
+    offscreenApi.hasDocument.mockResolvedValue(false);
+    await ensureOffscreen(offscreenApi);
+
+    expect(offscreenApi.createDocument).toHaveBeenCalledWith({
+      url: 'offscreen/offscreen.html',
+      reasons: ['IFRAME_SCRIPTING'],
+      justification: 'Maintain long-lived WebSocket connection',
+    });
   });
 
-  it('creates offscreen document when none exists', async () => {
-    mockChrome.offscreen.hasDocument.mockResolvedValue(false);
-    mockChrome.offscreen.createDocument.mockResolvedValue(undefined);
-
-    await ensureOffscreen();
-
-    expect(mockChrome.offscreen.hasDocument).toHaveBeenCalledTimes(1);
-    expect(mockChrome.offscreen.createDocument).toHaveBeenCalledTimes(1);
-  });
-
-  it('does NOT create offscreen document when one already exists', async () => {
-    mockChrome.offscreen.hasDocument.mockResolvedValue(true);
-
-    await ensureOffscreen();
-
-    expect(mockChrome.offscreen.hasDocument).toHaveBeenCalledTimes(1);
-    expect(mockChrome.offscreen.createDocument).not.toHaveBeenCalled();
-  });
-
-  it('creates document even if called multiple times (when hasDocument returns false)', async () => {
-    // Simulate: first call creates, second call also sees false (e.g. race)
-    mockChrome.offscreen.hasDocument
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(false);
-
-    await ensureOffscreen();
-    await ensureOffscreen();
-
-    expect(mockChrome.offscreen.createDocument).toHaveBeenCalledTimes(2);
+  it('does not recreate an existing offscreen document', async () => {
+    offscreenApi.hasDocument.mockResolvedValue(true);
+    await ensureOffscreen(offscreenApi);
+    expect(offscreenApi.createDocument).not.toHaveBeenCalled();
   });
 });
 
-// ---------------------------------------------------------------------------
-// Tests: getAppId
-// ---------------------------------------------------------------------------
-describe('getAppId', () => {
-  beforeEach(() => {
-    storedAppId = null;
+describe('stored AppID', () => {
+  it('persists and reads AppID from session storage', async () => {
+    const storage = createStorage();
+    await setAppId(storage, 'app-a');
+    await expect(getAppId(storage)).resolves.toBe('app-a');
   });
 
-  it('returns null when no AppID has been set', () => {
-    expect(getAppId()).toBeNull();
+  it('removes the AppID when leaving an application page', async () => {
+    const storage = createStorage({ appId: 'app-a' });
+    await setAppId(storage, null);
+    await expect(getAppId(storage)).resolves.toBeNull();
+    expect(storage.remove).toHaveBeenCalledWith('appId');
+  });
+});
+
+describe('bridge token', () => {
+  it('reuses a token from persistent local storage', async () => {
+    const storage = createStorage({ bridgeToken: 'existing-token' });
+    const randomUUID = vi.fn(() => 'new-token');
+
+    await expect(getBridgeToken(storage, randomUUID)).resolves.toBe('existing-token');
+    expect(randomUUID).not.toHaveBeenCalled();
   });
 
-  it('returns the stored AppID after being set', () => {
-    setAppId('d7e4f2a1b3c4');
-    expect(getAppId()).toBe('d7e4f2a1b3c4');
-  });
-
-  it('updates when a new AppID is set (tab switch scenario)', () => {
-    setAppId('app-a');
-    expect(getAppId()).toBe('app-a');
-    setAppId('app-b');
-    expect(getAppId()).toBe('app-b');
-  });
-
-  it('can be reset to null', () => {
-    setAppId('abc123');
-    expect(getAppId()).toBe('abc123');
-    setAppId(null);
-    expect(getAppId()).toBeNull();
+  it('creates and persists a token when missing', async () => {
+    const storage = createStorage();
+    await expect(getBridgeToken(storage, () => 'new-token')).resolves.toBe('new-token');
+    expect(storage.set).toHaveBeenCalledWith({ bridgeToken: 'new-token' });
   });
 });
