@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "TJproxy Bridge",
+  "version": "1.0.0",
+  "description": "Bridge between Tongji AI Platform and local scripts",
+  "permissions": ["cookies", "offscreen"],
+  "host_permissions": [
+    "*://*.tongji.edu.cn/*",
+    "*://tongji.edu.cn/*",
+    "http://localhost:*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://agent.tongji.edu.cn/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
