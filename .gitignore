@@ -1,5 +1,5 @@
 .playwright-mcp
-docs
+docs/superpowers/
 node_modules/
 .vite/
 __pycache__/

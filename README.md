@@ -1,297 +1,318 @@
-# TJproxy -- 同济 AI 平台 API 桥接
+# 基于同济 Agent 平台改造的 API 桥接与简易 Agent 工具
 
-通过本地 Python 服务 + Chrome 插件，将[同济大学 AI 平台](https://agent.tongji.edu.cn)的应用对话能力暴露为标准 HTTP API（原生 SSE 格式及 OpenAI `/v1/chat/completions` 兼容格式），方便在终端、脚本、Python 程序或其他工具链中调用。
-![icon](icon.png)
+TJproxy 通过本地 Python 服务和 Chrome 扩展，将[同济大学 Agent 平台](https://agent.tongji.edu.cn)中的智能体应用转换为可供终端、脚本和开发工具调用的 HTTP API，并提供一个基于严格 JSON 工具协议的简易本地 Agent CLI。
 
----
+![TJproxy](icon.png)
 
-## 前置条件
+> 本项目是非官方学习工具，需要使用者拥有可正常访问同济 Agent 平台的账号，并在 Chrome 中保持登录。
 
-- **Python 3.11+**（服务端使用 `asyncio`、内置 `hashlib` 等，无需高版本特性，但建议 3.11+）
-- **Chrome 浏览器**（加载解压的扩展）
-- **同济大学统一认证账号**（在 Chrome 中已登录 https://agent.tongji.edu.cn）
+## 核心能力
 
----
+### API 桥接
 
-## 安装步骤
+- 原始 SSE 接口：`POST /chat`
+- OpenAI Chat Completions 兼容接口：`POST /v1/chat/completions`
+- 支持流式和非流式响应
+- 支持 OpenAI Python SDK、`requests`、curl 等客户端
+- 自动复用 Chrome 中的登录状态和目标应用 `appId`
+
+### 简易 Agent CLI
+
+- 通过 Prompt 工程要求模型输出严格 JSON，而不是依赖原生 Tool Calling
+- 支持 `read`、`write`、`edit` 和受限 PowerShell 7 工具
+- 工作区在启动时固定，模型不能修改访问根目录
+- 模型输出、工具执行和结果回传严格串行
+- 默认最多执行 32 轮，可通过 TOML 配置调整，程序硬上限为 64 轮
+- 默认共享会话上下文，可使用 `/new` 清空
+- 自动检测并复用 TJproxy 服务；没有服务时自动启动并负责清理
+
+## 工作原理
+
+```text
+同济 Agent 页面
+      |
+Chrome 扩展读取登录态并调用平台 SSE API
+      |
+WebSocket
+      |
+TJproxy 本地服务 :8765
+      |                         |
+/chat、/v1/chat/completions     Agent CLI
+                                |
+                         JSON 工具循环
+                                |
+                    read / write / edit / pwsh
+```
+
+上游本质上是一个浏览器对话通道，因此服务端使用全局锁串行处理请求。同一时刻只会进行一轮上游对话，后一请求必须等待前一请求完整结束。
+
+## 环境要求
+
+- Python 3.11+
+- PowerShell 7，仅 Agent CLI 的 `powershell` 工具需要
+- Chrome 或 Chromium 浏览器
+- 已登录同济大学 Agent 平台的账号
+- 一个可正常对话的智能体应用
+
+## 安装
 
 ### 1. 安装 Python 依赖
 
-```bash
-cd D:\repos\TJproxy
-pip install -r server/requirements.txt
+```powershell
+git clone https://github.com/CNYJ256/TJproxy.git
+cd TJproxy
+python -m pip install -r server/requirements.txt
 ```
 
-依赖清单（见 `server/requirements.txt`）：
+### 2. 加载 Chrome 扩展
 
-| 包 | 用途 |
-|---|---|
-| `websockets` | 服务端集成测试的 WebSocket 客户端 |
-| `requests` | 测试脚本 / SDK 示例 |
-| `pytest` / `pytest-asyncio` | 测试运行器 |
+源码加载方式：
 
-### 2. 加载 Chrome 插件
+1. 打开 `chrome://extensions`。
+2. 开启右上角的“开发者模式”。
+3. 点击“加载已解压的扩展程序”。
+4. 选择仓库中的 `extension` 目录。
 
-#### Release加载：
-1. 打开 `chrome://extensions`
-2. 开启右上角 **开发者模式**
-3. 将下载的 `TJproxy-Bridge-v0.1.0.zip` 文件拖入扩展页面加载
+也可以在扩展页面直接加载 Release 提供的 ZIP 包。
 
+### 3. 打开目标 Agent 应用
 
-#### 源码加载：
-1. 打开 `chrome://extensions`
-2. 开启右上角 **开发者模式**
-3. 点击 **加载已解压的扩展程序**
-4. 选择 `D:\repos\TJproxy\extension\` 目录
+在 Chrome 中打开目标应用的对话页面：
 
-加载后你会在扩展列表看到 **"TJproxy Bridge"**。
-
-### 3. 启动 Python 服务
-
-```bash
-python server/main.py
-```
-
-启动成功后会打印：
-
-```
-TJproxy server listening on http://localhost:8765
-```
-
-长推理模型默认允许上游连续空闲 300 秒；流式响应每 15 秒发送一次 SSE
-心跳。可在启动前通过 `TJPROXY_IDLE_TIMEOUT` 和
-`TJPROXY_SSE_HEARTBEAT_INTERVAL`（单位：秒）调整。
-
----
-
-## 使用方法
-
-### 打开目标应用页面
-
-在 Chrome 中访问你在同济 AI 平台上创建的任意 **智能体应用** 的**对话页面**，URL 形如：
-
-```
+```text
 https://agent.tongji.edu.cn/application/<appId>/chat
 ```
 
-Extension 会自动提取该页面的 `appId` 并建立到 Python 服务的 WebSocket 连接。此后你的 HTTP 请求会被路由到该应用。
+扩展会提取当前页面的 `appId`，读取浏览器登录 Cookie，并连接本地 TJproxy 服务。切换到其他应用页面后，后续请求将使用新的应用。
 
-桥接连接使用扩展自动生成并持久化的本地令牌，只接受 `chrome-extension://` 来源。由于上游本质上是单一浏览器对话页，同时到达的 HTTP 对话请求会在服务端排队执行。
+## API 桥接使用
 
----
+### 启动服务
 
-### curl 示例
-
-#### 原始 `/chat` 接口（SSE 流式）
-
-```bash
-curl -X POST http://localhost:8765/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "你好，介绍一下你自己"}'
+```powershell
+python server/main.py
 ```
 
-响应为 SSE 流，每行为一个 token：
+启动成功后输出：
 
+```text
+TJproxy server listening on http://localhost:8765
 ```
+
+扩展可能需要数秒重新连接。如果请求返回“无 Extension 连接”，请确认目标应用页面仍然打开，然后稍后重试。
+
+### 原始 SSE 接口
+
+```powershell
+curl.exe -X POST http://localhost:8765/chat `
+  -H "Content-Type: application/json" `
+  -d '{"message":"你好，请介绍一下自己"}'
+```
+
+响应示例：
+
+```text
 data: 你好
-data: ！我
-data: 是
-data: 同济
-...
+data: ！
 data: [DONE]
 ```
 
-#### OpenAI 兼容接口 `/v1/chat/completions`（流式）
+### OpenAI 兼容接口
 
-```bash
-curl -X POST http://localhost:8765/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "tongji-agent",
-    "messages": [{"role": "user", "content": "你好"}],
-    "stream": true
-  }'
+非流式请求：
+
+```powershell
+curl.exe -X POST http://localhost:8765/v1/chat/completions `
+  -H "Content-Type: application/json" `
+  -d '{"model":"tongji-agent","messages":[{"role":"user","content":"你好"}],"stream":false}'
 ```
 
-#### OpenAI 兼容接口（非流式）
-
-```bash
-curl -X POST http://localhost:8765/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "tongji-agent",
-    "messages": [{"role": "user", "content": "你好"}],
-    "stream": false
-  }'
-```
-
-返回标准 OpenAI 格式 JSON：
-
-```json
-{
-  "id": "chatcmpl-...",
-  "object": "chat.completion",
-  "created": 1718360000,
-  "model": "tongji-agent",
-  "choices": [{
-    "index": 0,
-    "message": {"role": "assistant", "content": "你好！有什么可以帮助你的？"},
-    "finish_reason": "stop"
-  }]
-}
-```
-
----
-
-### Python requests 示例
-
-#### 非流式调用 OpenAI 兼容接口
+Python `requests` 示例：
 
 ```python
 import requests
 
-resp = requests.post(
+response = requests.post(
     "http://localhost:8765/v1/chat/completions",
     json={
         "model": "tongji-agent",
         "messages": [{"role": "user", "content": "用一句话介绍同济大学"}],
         "stream": False,
     },
+    timeout=330,
 )
-data = resp.json()
-print(data["choices"][0]["message"]["content"])
+response.raise_for_status()
+print(response.json()["choices"][0]["message"]["content"])
 ```
 
-#### 流式调用 OpenAI 兼容接口
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8765/v1/chat/completions",
-    json={
-        "model": "tongji-agent",
-        "messages": [{"role": "user", "content": "列举三个上海的地标建筑"}],
-        "stream": True,
-    },
-    stream=True,
-)
-
-for line in resp.iter_lines(decode_unicode=True):
-    if not line:
-        continue
-    if line.startswith("data: "):
-        data = line[6:]
-        if data == "[DONE]":
-            break
-        chunk = json.loads(data)
-        content = chunk["choices"][0]["delta"].get("content", "")
-        if content:
-            print(content, end="", flush=True)
-```
-
----
-
-### openai Python SDK 示例
+OpenAI Python SDK 示例：
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="任意值",                          # 本服务不校验 key
-    base_url="http://localhost:8765/v1",       # 指向本地服务
+    api_key="sk-placeholder",
+    base_url="http://localhost:8765/v1",
 )
 
-# 流式调用
-stream = client.chat.completions.create(
+response = client.chat.completions.create(
     model="tongji-agent",
     messages=[{"role": "user", "content": "你好"}],
-    stream=True,
 )
-
-for chunk in stream:
-    content = chunk.choices[0].delta.content or ""
-    print(content, end="", flush=True)
+print(response.choices[0].message.content)
 ```
 
-> 注意：`model` 字段可以是任意字符串，服务端不依赖该值。`api_key` 可以填任意值（如 `"sk-placeholder"`），服务端不做校验。
+`model` 和 `api_key` 当前不参与服务端鉴权。服务仅监听本机地址，不应直接暴露到公网。
 
----
+## 简易 Agent CLI 使用
 
-## 交互式 Agent CLI
-
-可选的 CLI 在现有非流式 `/v1/chat/completions` 接口外增加本地 JSON 工具循环，现有 `/chat`、OpenAI 兼容接口和 Chrome 插件协议保持不变，不新增 `/agent` 接口。
+确保 Chrome 扩展已加载并打开目标 Agent 页面，然后运行：
 
 ```powershell
 python agent_cli.py --workspace D:\repos\example
 ```
 
-CLI 启动时会检测配置地址上的 TJproxy 服务：
+CLI 会先检测 `agent.toml` 中的 TJproxy 地址：
 
-- 已存在兼容服务时直接复用，退出 CLI 不会停止该服务。
-- 没有服务时自动启动 `server/main.py`，等待就绪，并只在退出时停止自己创建的子进程。
-- 端口被不兼容程序占用时直接报错，不会替换或终止该程序。
+- 已有兼容服务时直接复用，CLI 退出后不会关闭该服务。
+- 没有服务时自动启动 `server/main.py`，退出时只关闭自己创建的进程。
+- 端口被其他程序占用时停止启动，不会替换或终止该程序。
 
 交互命令：
 
-- 每次输入一个任务；当前模型输出、工具执行和后续模型请求全部结束后，才会显示下一个 `agent>` 提示符。
-- `/new`：清空当前对话上下文。
-- `/exit`：退出 CLI。
+```text
+/new   清空当前会话上下文
+/exit  退出 CLI
+```
 
-配置默认读取仓库根目录的 `agent.toml`，也可以指定其他文件：
+示例任务：
+
+```text
+agent> 阅读 README.md，告诉我项目提供了哪些接口，不要修改文件。
+```
+
+每次任务会按以下流程执行：
+
+```text
+用户任务
+  -> 模型完整输出一个 JSON 对象
+  -> CLI 校验 JSON Schema
+  -> 执行至多一个工具
+  -> 将结构化结果回传模型
+  -> 重复，直到模型返回 final
+```
+
+模型输出不满足协议时不会执行任何内容，而是将协议错误回传模型重新生成。
+
+## Agent 工具与安全边界
+
+### 文件工具
+
+- `read`：读取工作区内 UTF-8 文本文件
+- `write`：在工作区内创建或覆盖文件
+- `edit`：执行具有预期替换次数的精确文本替换
+
+路径必须相对工作区，程序会拒绝绝对路径、`..` 穿越、Windows ADS、设备名、符号链接和目录联接逃逸。
+
+### PowerShell 工具
+
+PowerShell 工具只接受结构化管道 stage，不执行模型直接生成的原始命令字符串。默认策略允许常见的只读开发和验证命令，并拒绝：
+
+- 重定向和命令连接
+- 变量展开、子表达式和脚本块
+- 提权、后台任务和交互程序
+- 工作区外路径
+- 未加入白名单的命令、子命令和参数
+- Git `reset` 等修改型子命令
+
+现有工作区脚本可以通过配置允许的解释器复用。
+
+> 这些限制属于应用级策略，不是操作系统级沙箱。测试工具、构建工具、包脚本和工作区脚本本身仍然可以执行代码。只应对可信工作区和可信脚本使用 Agent CLI。
+
+## 配置
+
+Agent 默认读取仓库根目录的 `agent.toml`：
 
 ```powershell
 python agent_cli.py --workspace D:\repos\example --config D:\config\agent.toml
 ```
 
-`service.base_url` 仅接受带明确端口的本机 HTTP origin（`localhost`、`127.0.0.1` 或 `::1`），不接受远端地址、凭据、路径、查询参数或重定向。
+主要配置项：
 
-默认最多执行 32 轮“完整模型输出 -> 一个工具 -> 工具结果”，程序硬上限为 64 轮。支持 `read`、`write`、`edit` 和受限 PowerShell 7 管道；工作区在 CLI 启动后不可由模型修改。
+| 配置 | 默认值 | 用途 |
+|---|---:|---|
+| `agent.max_rounds` | `32` | 单次任务最大模型轮数 |
+| `service.base_url` | `http://localhost:8765` | 本地 TJproxy 地址 |
+| `service.request_timeout_seconds` | `330` | 单次模型请求超时 |
+| `powershell.timeout_seconds` | `60` | 命令执行超时 |
+| `limits.output_chars` | `20000` | 工具输出字符上限 |
 
-### Agent 安全边界
+`service.base_url` 只接受带明确端口的本机 HTTP origin：`localhost`、`127.0.0.1` 或 `::1`。
 
-文件路径被限制在所选工作区内，PowerShell 仅接受结构化 JSON stage 和 TOML 白名单中的命令、子命令与参数规则。文件修改应通过 `write` 和 `edit` 完成，PowerShell 不支持重定向、复合语句、变量展开、脚本块、提权或交互程序。
+### 服务超时与心跳
 
-这属于**应用级安全策略，不是操作系统沙箱**。允许的测试工具、构建工具、包脚本和工作区脚本本身可以执行代码，能力可能超出参数检查范围。请仅对可信工作区和可信脚本使用 CLI。
+```powershell
+$env:TJPROXY_IDLE_TIMEOUT = "300"
+$env:TJPROXY_SSE_HEARTBEAT_INTERVAL = "15"
+python server/main.py
+```
 
----
+### 修改端口
 
-## 端口配置
+服务端口可通过环境变量设置：
 
-默认端口为 `8765`。如需修改，编辑两个文件：
+```powershell
+$env:TJPROXY_PORT = "9000"
+python server/main.py
+```
 
-1. **`server/main.py`** 第 20 行：`PORT = 8765`
-2. **`extension/offscreen/offscreen.js`** 第 1 行：`WS_URL = 'ws://localhost:8765'`
+同时需要修改：
 
-将两处改为相同新端口后，重新加载插件并重启服务。
+- `extension/offscreen/offscreen.js` 中的 `WS_URL`
+- Agent 使用的 `agent.toml` 中的 `service.base_url`
 
-## 运行测试
+## 项目结构
 
-```bash
+```text
+TJproxy/
+|- server/          本地 HTTP、SSE 与 WebSocket 桥接服务
+|- extension/       Chrome Manifest V3 扩展
+|- tjproxy_agent/   Agent 协议、工具、沙箱策略和运行循环
+|- agent_cli.py     交互式 Agent 入口
+|- agent.toml       Agent 默认配置
+|- agent_tests/     Agent 单元与端到端测试
+`- README.md
+```
+
+## 测试
+
+Python 测试：
+
+```powershell
 python -m pytest server agent_tests -q
+```
+
+扩展测试：
+
+```powershell
 cd extension
 npm ci
 npm test
 ```
 
-Python 3.11 及以上均可运行服务；测试命令中的解释器可按本机环境替换，但需先安装 `server/requirements.txt`。
+## 已知限制
 
----
+- 依赖浏览器中有效的同济统一认证登录状态。
+- 依赖目标 Agent 应用页面保持打开。
+- 上游为单对话通道，不支持并行模型请求或并行工具执行。
+- Agent 工具协议由 Prompt 工程驱动，模型可能产生无效 JSON；CLI 会拒绝执行并请求修正。
+- 平台接口或页面结构变化后，扩展可能需要同步更新。
+- 仅面向本地学习和开发场景，不建议作为生产服务部署。
 
-## 技术实现说明
-
-- **服务端**（`server/main.py`）：纯 Python 标准库实现（`asyncio` + 内置模块），不依赖任何 Web 框架。自行处理 HTTP/1.1 请求路由、WebSocket 协议（握手、帧编解码）、SSE 格式化、OpenAI 兼容响应生成，并用单一异步锁串行处理对话请求。
-- **插件端**（`extension/`）：Chrome Manifest V3 架构。
-  - `content.js`：注入 `agent.tongji.edu.cn` 页面，提取 URL 中的 `appId` 并通知 background。
-  - `background.js`（Service Worker）：管理 offscreen 文档生命周期，持久化 AppID 与桥接令牌，并提供 Cookie 读取代理。
-  - `offscreen/offscreen.js`：维护到 Python 服务的 WebSocket 长连接，接收 chat 指令后调用同济 SSE API，将 token 逐条回传。带指数退避自动重连。
-- **API 设计**：`POST /chat` 返回原始 SSE token 流；`POST /v1/chat/completions` 兼容 OpenAI Chat Completions API，支持 `stream` 参数控制流式/非流式。
-
----
 ## 免责声明
 
-本项目为个人学习开发的非官方工具，旨在探索同济 AI 平台的 Web to API 接入可能性。请勿将其用于任何商业或生产环境。使用过程中请遵守同济大学的相关使用政策和法律法规。开发者不对因使用本项目而产生的任何直接或间接损失负责。
+本项目为个人学习开发的非官方工具，与同济大学及其 Agent 平台官方无关联。使用者应遵守学校相关规定、平台使用条款和适用法律，不得用于未授权访问、商业服务或其他违规用途。开发者不对使用本项目产生的直接或间接损失承担责任。
 
----
 ## 许可证
-本项目采用 MIT 许可证，详见 LICENSE 文件。
+
+本项目采用 [MIT License](LICENSE)。
