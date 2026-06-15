@@ -49,12 +49,12 @@ def fake_tjproxy(responses):
         def log_message(self, *args):
             pass
 
-    server = ThreadingHTTPServer(("localhost", 0), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.requests = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://localhost:{server.server_port}", server
+        yield f"http://127.0.0.1:{server.server_port}", server
     finally:
         server.shutdown()
         thread.join()

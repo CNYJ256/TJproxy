@@ -63,7 +63,7 @@ def test_invalid_completion_shape_is_rejected():
 
 def test_incompatible_occupied_port_is_not_replaced(monkeypatch, tmp_path: Path):
     manager = ServiceManager(
-        tmp_path / "main.py", "http://localhost:9", 0.1, request_timeout=2
+        tmp_path / "main.py", "http://127.0.0.1:9", 0.1, request_timeout=2
     )
     monkeypatch.setattr(manager.client, "port_is_open", lambda: True)
     monkeypatch.setattr(manager.client, "is_compatible", lambda: False)
@@ -88,7 +88,7 @@ def test_manager_starts_and_stops_owned_compatible_service(tmp_path: Path):
     script = tmp_path / "fake_server.py"
     script.write_text(_compatible_server_script(), encoding="utf-8")
     manager = ServiceManager(
-        script, f"http://localhost:{port}", 5, request_timeout=2
+        script, f"http://127.0.0.1:{port}", 5, request_timeout=2
     )
 
     manager.ensure_running()
@@ -105,7 +105,7 @@ def test_readiness_timeout_cleans_up_child(tmp_path: Path):
     script = tmp_path / "sleep.py"
     script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
     manager = ServiceManager(
-        script, f"http://localhost:{port}", 0.2, request_timeout=2
+        script, f"http://127.0.0.1:{port}", 0.2, request_timeout=2
     )
 
     with pytest.raises(ServiceError, match="readiness timeout"):
@@ -116,7 +116,7 @@ def test_readiness_timeout_cleans_up_child(tmp_path: Path):
 
 def _free_port() -> int:
     with socket.socket() as sock:
-        sock.bind(("localhost", 0))
+        sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
 
 
@@ -153,5 +153,5 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-HTTPServer(('localhost', int(os.environ['TJPROXY_PORT'])), Handler).serve_forever()
+HTTPServer(('127.0.0.1', int(os.environ['TJPROXY_PORT'])), Handler).serve_forever()
 """
