@@ -5,6 +5,16 @@ from pathlib import Path, PureWindowsPath
 import stat
 import tempfile
 
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "CLOCK$",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+
 
 class ToolFailure(RuntimeError):
     def __init__(self, code: str, message: str):
@@ -32,6 +42,7 @@ class Workspace:
             or windows.drive
             or ":" in raw_path
             or ".." in windows.parts
+            or any(_is_windows_device_name(part) for part in windows.parts)
         ):
             raise ToolFailure("WORKSPACE_ESCAPE", raw_path)
 
@@ -135,3 +146,9 @@ class Workspace:
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
+
+
+def _is_windows_device_name(part: str) -> bool:
+    normalized = part.rstrip(" .")
+    stem = normalized.split(".", 1)[0].upper()
+    return stem in WINDOWS_RESERVED_NAMES

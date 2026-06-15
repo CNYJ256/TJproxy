@@ -115,26 +115,31 @@ class AgentRunner:
         self.messages = [{"role": "system", "content": self.system_prompt}]
 
     def run(self, task: str) -> RunOutcome:
+        history_length = len(self.messages)
         self.messages.append({"role": "user", "content": task})
-        for round_number in range(1, self.max_rounds + 1):
-            raw = self.client.complete(self.messages)
-            self.messages.append({"role": "assistant", "content": raw})
-            try:
-                response = parse_response(raw)
-            except ProtocolError as exc:
-                self.messages.append(
-                    {
-                        "role": "user",
-                        "content": protocol_error_message(str(exc)),
-                    }
-                )
-                continue
-            if isinstance(response, FinalResponse):
-                return RunOutcome("completed", response.content, round_number)
-            self.audit(("tool_call", response))
-            result = self.tools.execute(response)
-            self.audit(("tool_result", result))
-            self.messages.append({"role": "user", "content": result})
-        return RunOutcome(
-            "round_limit", "maximum agent rounds reached", self.max_rounds
-        )
+        try:
+            for round_number in range(1, self.max_rounds + 1):
+                raw = self.client.complete(self.messages)
+                self.messages.append({"role": "assistant", "content": raw})
+                try:
+                    response = parse_response(raw)
+                except ProtocolError as exc:
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": protocol_error_message(str(exc)),
+                        }
+                    )
+                    continue
+                if isinstance(response, FinalResponse):
+                    return RunOutcome("completed", response.content, round_number)
+                self.audit(("tool_call", response))
+                result = self.tools.execute(response)
+                self.audit(("tool_result", result))
+                self.messages.append({"role": "user", "content": result})
+            return RunOutcome(
+                "round_limit", "maximum agent rounds reached", self.max_rounds
+            )
+        except BaseException:
+            del self.messages[history_length:]
+            raise

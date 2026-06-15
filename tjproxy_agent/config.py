@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 import tomllib
+from urllib.parse import urlsplit
 
 HARD_MAX_ROUNDS = 64
 
@@ -278,3 +279,23 @@ def _validate_config(config: AppConfig) -> None:
     for label, value in positive_values.items():
         if value <= 0:
             raise ConfigError(f"{label} must be positive")
+    _validate_service_url(config.service.base_url)
+
+
+def _validate_service_url(base_url: str) -> None:
+    try:
+        parsed = urlsplit(base_url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ConfigError("service.base_url must be a local HTTP origin") from exc
+    if (
+        parsed.scheme != "http"
+        or (parsed.hostname or "").casefold() not in {"localhost", "127.0.0.1", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigError("service.base_url must be a local HTTP origin")

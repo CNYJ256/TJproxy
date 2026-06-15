@@ -82,3 +82,24 @@ def test_duplicate_command_names_are_rejected_case_insensitively(tmp_path: Path)
 
     with pytest.raises(ConfigError, match="duplicate command policy"):
         load_config(path)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://localhost:8765",
+        "http://example.com:8765",
+        "http://user:pass@localhost:8765",
+        "http://localhost:8765/api",
+        "http://localhost:8765?x=1",
+    ],
+)
+def test_service_url_must_be_plain_local_http_origin(tmp_path: Path, base_url: str):
+    path = tmp_path / "agent.toml"
+    path.write_text(
+        f"[service]\nbase_url = {base_url!r}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="local HTTP origin"):
+        load_config(path)

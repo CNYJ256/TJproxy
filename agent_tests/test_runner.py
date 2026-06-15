@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from tjproxy_agent.client import ServiceError
 from tjproxy_agent.protocol import ToolCall
 from tjproxy_agent.prompt import SYSTEM_PROMPT, load_system_prompt
 from tjproxy_agent.runner import AgentRunner, RunOutcome, ToolDispatcher
@@ -16,7 +17,10 @@ class FakeClient:
 
     def complete(self, messages):
         self.calls.append([dict(message) for message in messages])
-        return next(self.responses)
+        response = next(self.responses)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 class FakeTools:
@@ -153,3 +157,22 @@ def test_custom_prompt_is_relative_to_config_and_cannot_escape(tmp_path: Path):
     assert load_system_prompt(config_path, "prompt.txt") == "custom protocol"
     with pytest.raises(ValueError, match="inside the config directory"):
         load_system_prompt(config_path, "../outside.txt")
+
+
+@pytest.mark.parametrize(
+    "failure", [ServiceError("offline"), KeyboardInterrupt()]
+)
+def test_interrupted_model_request_rolls_back_current_task(failure):
+    client = FakeClient(
+        ['{"type":"final","content":"first"}', failure]
+    )
+    runner = AgentRunner(
+        client, FakeTools(), max_rounds=2, system_prompt="protocol"
+    )
+    runner.run("completed task")
+    history_before = list(runner.messages)
+
+    with pytest.raises(type(failure)):
+        runner.run("failed task")
+
+    assert runner.messages == history_before

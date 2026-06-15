@@ -19,10 +19,16 @@ class TJproxyClient:
     def __init__(self, base_url: str, *, request_timeout: float):
         self.base_url = base_url.rstrip("/")
         self.request_timeout = request_timeout
+        self.session = requests.Session()
+        self.session.trust_env = False
 
     def is_compatible(self) -> bool:
         try:
-            response = requests.get(f"{self.base_url}/v1/models", timeout=0.5)
+            response = self.session.get(
+                f"{self.base_url}/v1/models",
+                timeout=0.5,
+                allow_redirects=False,
+            )
             response.raise_for_status()
             models = response.json().get("data", [])
             return any(
@@ -51,10 +57,11 @@ class TJproxyClient:
         response = None
         for attempt in range(2):
             try:
-                response = requests.post(
+                response = self.session.post(
                     f"{self.base_url}/v1/chat/completions",
                     json=payload,
                     timeout=self.request_timeout,
+                    allow_redirects=False,
                 )
                 break
             except requests.ConnectionError as exc:

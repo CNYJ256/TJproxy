@@ -244,6 +244,8 @@ CLI 启动时会检测配置地址上的 TJproxy 服务：
 python agent_cli.py --workspace D:\repos\example --config D:\config\agent.toml
 ```
 
+`service.base_url` 仅接受带明确端口的本机 HTTP origin（`localhost`、`127.0.0.1` 或 `::1`），不接受远端地址、凭据、路径、查询参数或重定向。
+
 默认最多执行 32 轮“完整模型输出 -> 一个工具 -> 工具结果”，程序硬上限为 64 轮。支持 `read`、`write`、`edit` 和受限 PowerShell 7 管道；工作区在 CLI 启动后不可由模型修改。
 
 ### Agent 安全边界

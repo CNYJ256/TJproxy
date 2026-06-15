@@ -79,3 +79,11 @@ def test_missing_read_is_reported(tmp_path: Path):
 
     with pytest.raises(ToolFailure, match="NOT_FOUND"):
         workspace.read("missing.txt")
+
+
+@pytest.mark.parametrize("path", ["NUL", "con.txt", "dir/COM1.log", "LPT9"])
+def test_windows_device_names_are_rejected(tmp_path: Path, path: str):
+    workspace = make_workspace(tmp_path)
+
+    with pytest.raises(ToolFailure, match="WORKSPACE_ESCAPE"):
+        workspace.write(path, "data")

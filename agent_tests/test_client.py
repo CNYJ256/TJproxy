@@ -43,7 +43,7 @@ def test_complete_retries_one_connection_loss(monkeypatch):
             raise value
         return value
 
-    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(client.session, "post", post)
     monkeypatch.setattr(client, "is_compatible", lambda: True)
 
     assert client.complete([{"role": "user", "content": "task"}]) == "done"
@@ -56,9 +56,31 @@ def test_invalid_completion_shape_is_rejected():
         response.raise_for_status.return_value = None
         response.json.return_value = {"choices": []}
         with pytest.MonkeyPatch.context() as monkeypatch:
-            monkeypatch.setattr(requests, "post", lambda *args, **kwargs: response)
+            monkeypatch.setattr(
+                client.session, "post", lambda *args, **kwargs: response
+            )
             with pytest.raises(ServiceError, match="invalid completion"):
                 client.complete([])
+
+
+def test_client_disables_environment_proxies_and_redirects(monkeypatch):
+    client = TJproxyClient("http://localhost:8765", request_timeout=2)
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "choices": [{"message": {"role": "assistant", "content": "done"}}]
+    }
+    seen = {}
+
+    def post(*args, **kwargs):
+        seen.update(kwargs)
+        return response
+
+    monkeypatch.setattr(client.session, "post", post)
+    client.complete([])
+
+    assert client.session.trust_env is False
+    assert seen["allow_redirects"] is False
 
 
 def test_incompatible_occupied_port_is_not_replaced(monkeypatch, tmp_path: Path):
