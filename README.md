@@ -218,6 +218,42 @@ for chunk in stream:
 
 ---
 
+## 交互式 Agent CLI
+
+可选的 CLI 在现有非流式 `/v1/chat/completions` 接口外增加本地 JSON 工具循环，现有 `/chat`、OpenAI 兼容接口和 Chrome 插件协议保持不变，不新增 `/agent` 接口。
+
+```powershell
+python agent_cli.py --workspace D:\repos\example
+```
+
+CLI 启动时会检测配置地址上的 TJproxy 服务：
+
+- 已存在兼容服务时直接复用，退出 CLI 不会停止该服务。
+- 没有服务时自动启动 `server/main.py`，等待就绪，并只在退出时停止自己创建的子进程。
+- 端口被不兼容程序占用时直接报错，不会替换或终止该程序。
+
+交互命令：
+
+- 每次输入一个任务；当前模型输出、工具执行和后续模型请求全部结束后，才会显示下一个 `agent>` 提示符。
+- `/new`：清空当前对话上下文。
+- `/exit`：退出 CLI。
+
+配置默认读取仓库根目录的 `agent.toml`，也可以指定其他文件：
+
+```powershell
+python agent_cli.py --workspace D:\repos\example --config D:\config\agent.toml
+```
+
+默认最多执行 32 轮“完整模型输出 -> 一个工具 -> 工具结果”，程序硬上限为 64 轮。支持 `read`、`write`、`edit` 和受限 PowerShell 7 管道；工作区在 CLI 启动后不可由模型修改。
+
+### Agent 安全边界
+
+文件路径被限制在所选工作区内，PowerShell 仅接受结构化 JSON stage 和 TOML 白名单中的命令、子命令与参数规则。文件修改应通过 `write` 和 `edit` 完成，PowerShell 不支持重定向、复合语句、变量展开、脚本块、提权或交互程序。
+
+这属于**应用级安全策略，不是操作系统沙箱**。允许的测试工具、构建工具、包脚本和工作区脚本本身可以执行代码，能力可能超出参数检查范围。请仅对可信工作区和可信脚本使用 CLI。
+
+---
+
 ## 端口配置
 
 默认端口为 `8765`。如需修改，编辑两个文件：
@@ -230,7 +266,7 @@ for chunk in stream:
 ## 运行测试
 
 ```bash
-python -m pytest server -q
+python -m pytest server agent_tests -q
 cd extension
 npm ci
 npm test
