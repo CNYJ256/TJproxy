@@ -481,6 +481,41 @@ async def test_openai_non_streaming(ws_client):
     assert isinstance(body["created"], int)
 
 
+@pytest.mark.asyncio
+async def test_openai_logging_does_not_break_on_non_gbk_text(ws_client):
+    """Proxy logging must not terminate requests containing arbitrary Unicode."""
+    ws = ws_client
+
+    async def handle_ws():
+        chat = json.loads(await ws.recv())
+        assert "ã" in chat["message"]
+        await ws.send(json.dumps({
+            "type": "token",
+            "request_id": chat.get("request_id"),
+            "content": "reply ã",
+        }))
+        await ws.send(json.dumps({
+            "type": "done",
+            "request_id": chat.get("request_id"),
+        }))
+
+    ws_task = asyncio.create_task(handle_ws())
+
+    resp = await asyncio.to_thread(
+        requests.post,
+        f"{SERVER_URL}/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "prompt ã"}],
+            "stream": False,
+        },
+        timeout=5,
+    )
+    await ws_task
+
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["choices"][0]["message"]["content"] == "reply ã"
+
+
 # ---------------------------------------------------------------------------
 # 9. OpenAI /v1/chat/completions — streaming
 # ---------------------------------------------------------------------------
@@ -560,6 +595,89 @@ async def test_openai_streaming(ws_client):
     assert "[DONE]" in chunks
 
 
+@pytest.mark.asyncio
+async def test_openai_stream_uses_request_id_and_ignores_stale_messages(ws_client):
+    """Late tokens from a previous browser request must not enter this stream."""
+    ws = ws_client
+
+    def post():
+        return requests.post(
+            f"{SERVER_URL}/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "slow"}],
+                "stream": True,
+            },
+            stream=True,
+            timeout=5,
+        )
+
+    http_task = asyncio.create_task(asyncio.to_thread(post))
+    chat = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+    actual_request_id = chat.get("request_id")
+    has_request_id = isinstance(actual_request_id, str) and bool(actual_request_id)
+    request_id = actual_request_id or "missing-request-id"
+
+    await ws.send(json.dumps({"type": "started", "request_id": request_id}))
+    resp = await asyncio.wait_for(http_task, timeout=2)
+
+    await ws.send(json.dumps({
+        "type": "token",
+        "request_id": "stale-request",
+        "content": "WRONG",
+    }))
+    await ws.send(json.dumps({
+        "type": "token",
+        "request_id": request_id,
+        "content": "RIGHT",
+    }))
+    await ws.send(json.dumps({"type": "done", "request_id": request_id}))
+
+    lines = await asyncio.to_thread(
+        lambda: list(resp.iter_lines(decode_unicode=True)))
+    resp.close()
+    payload = "\n".join(lines)
+    assert has_request_id
+    assert "RIGHT" in payload
+    assert "WRONG" not in payload
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_sends_heartbeat_while_model_is_thinking(ws_client):
+    """A started stream stays visibly alive before the first answer token."""
+    ws = ws_client
+    body = json.dumps({
+        "messages": [{"role": "user", "content": "think"}],
+        "stream": True,
+    }).encode()
+    reader, writer = await asyncio.open_connection(SERVER_HOST, SERVER_PORT)
+    writer.write(
+        b"POST /v1/chat/completions HTTP/1.1\r\n"
+        b"Host: localhost\r\n"
+        b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+        + body
+    )
+    await writer.drain()
+
+    chat = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+    actual_request_id = chat.get("request_id")
+    has_request_id = isinstance(actual_request_id, str) and bool(actual_request_id)
+    request_id = actual_request_id or "missing-request-id"
+    await ws.send(json.dumps({"type": "started", "request_id": request_id}))
+
+    try:
+        headers = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=2)
+        assert b"200 OK" in headers
+        heartbeat = await asyncio.wait_for(reader.readline(), timeout=0.5)
+        assert has_request_id
+        assert heartbeat == b": keep-alive\n"
+    finally:
+        await ws.send(json.dumps({"type": "done", "request_id": request_id}))
+        writer.close()
+        await writer.wait_closed()
+
+
 # ---------------------------------------------------------------------------
 # 10. OpenAI — messages concatenation
 # ---------------------------------------------------------------------------
@@ -599,6 +717,50 @@ async def test_openai_messages_concat(ws_client):
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
     assert body["choices"][0]["message"]["content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_openai_extracts_text_from_content_blocks(ws_client):
+    """CC Switch content blocks must retain the final user instruction."""
+    ws = ws_client
+
+    async def handle_ws():
+        chat = json.loads(await ws.recv())
+        assert chat["message"] == "System context\n只回复 pong"
+        await ws.send(json.dumps({
+            "type": "token",
+            "request_id": chat.get("request_id"),
+            "content": "pong",
+        }))
+        await ws.send(json.dumps({
+            "type": "done",
+            "request_id": chat.get("request_id"),
+        }))
+
+    ws_task = asyncio.create_task(handle_ws())
+
+    resp = await asyncio.to_thread(
+        requests.post,
+        f"{SERVER_URL}/v1/chat/completions",
+        json={
+            "messages": [
+                {"role": "system", "content": "System context"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "只回复 pong"},
+                        {"type": "tool_result", "content": "ignored"},
+                    ],
+                },
+            ],
+            "stream": False,
+        },
+        timeout=5,
+    )
+    await ws_task
+
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["choices"][0]["message"]["content"] == "pong"
 
 
 # ---------------------------------------------------------------------------

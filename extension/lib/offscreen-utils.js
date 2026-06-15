@@ -3,14 +3,16 @@
     const trimmed = line.trim();
     const tokens = [];
     let isDone = false;
+    let hasActivity = false;
 
     if (!trimmed) {
-      return { tokens, isDone };
+      return { tokens, isDone, hasActivity };
     }
 
     if (trimmed.startsWith('event:')) {
       state.lastEvent = trimmed.slice(6).trim();
-      return { tokens, isDone };
+      hasActivity = true;
+      return { tokens, isDone, hasActivity };
     }
 
     if (trimmed.startsWith('data:')) {
@@ -19,16 +21,17 @@
         jsonText = jsonText.slice(6).trim();
       }
       if (!jsonText) {
-        return { tokens, isDone };
+        return { tokens, isDone, hasActivity };
       }
 
       let parsed;
       try {
         parsed = JSON.parse(jsonText);
       } catch {
-        return { tokens, isDone };
+        return { tokens, isDone, hasActivity };
       }
 
+      hasActivity = true;
       const eventType = parsed.event || state.lastEvent;
       if (eventType === 'message' && typeof parsed.answer === 'string') {
         tokens.push(parsed.answer);
@@ -37,15 +40,15 @@
       }
     }
 
-    return { tokens, isDone };
+    return { tokens, isDone, hasActivity };
   }
 
   function buildBridgeUrl(baseUrl, token) {
     return `${baseUrl}/bridge?token=${encodeURIComponent(token)}`;
   }
 
-  function buildChatRequest(message, appId, csrf, cookieHeader) {
-    return {
+  function buildChatRequest(message, appId, csrf, cookieHeader, signal) {
+    const options = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -59,6 +62,10 @@
         QueryExtends: { Files: [] },
       }),
     };
+    if (signal) {
+      options.signal = signal;
+    }
+    return options;
   }
 
   root.TJproxyOffscreenUtils = Object.freeze({

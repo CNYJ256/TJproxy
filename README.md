@@ -35,7 +35,7 @@ pip install -r server/requirements.txt
 #### Release加载：
 1. 打开 `chrome://extensions`
 2. 开启右上角 **开发者模式**
-3. 将下载的 `TJproxy-Bridge-1.0.0.zip` 文件拖入扩展页面加载
+3. 将下载的 `TJproxy-Bridge-v0.1.0.zip` 文件拖入扩展页面加载
 
 
 #### 源码加载：
@@ -57,6 +57,10 @@ python server/main.py
 ```
 TJproxy server listening on http://localhost:8765
 ```
+
+长推理模型默认允许上游连续空闲 300 秒；流式响应每 15 秒发送一次 SSE
+心跳。可在启动前通过 `TJPROXY_IDLE_TIMEOUT` 和
+`TJPROXY_SSE_HEARTBEAT_INTERVAL`（单位：秒）调整。
 
 ---
 

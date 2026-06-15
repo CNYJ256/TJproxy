@@ -58,6 +58,8 @@ def server():
 
     env = os.environ.copy()
     env["TJPROXY_PORT"] = str(SERVER_PORT)
+    env["TJPROXY_IDLE_TIMEOUT"] = "1"
+    env["TJPROXY_SSE_HEARTBEAT_INTERVAL"] = "0.1"
     proc = subprocess.Popen(
         [sys.executable, str(main_py)],
         cwd=str(server_dir),

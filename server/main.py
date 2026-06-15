@@ -23,6 +23,9 @@ WS_PATH = "/bridge"
 MAX_REQUEST_LINE = 8192
 MAX_HEADER_BYTES = 32768
 MAX_BODY_BYTES = 1024 * 1024
+BRIDGE_IDLE_TIMEOUT = float(os.environ.get("TJPROXY_IDLE_TIMEOUT", "300"))
+SSE_HEARTBEAT_INTERVAL = float(
+    os.environ.get("TJPROXY_SSE_HEARTBEAT_INTERVAL", "15"))
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +37,7 @@ MAX_BODY_BYTES = 1024 * 1024
 
 _ws_writer = None         # asyncio.StreamWriter for the connected WS client
 _pending_queue = None     # asyncio.Queue for the current in-flight HTTP request
+_pending_request_id = None
 _bridge_token = None      # Trust-on-first-use token supplied by the Extension
 _chat_lock = asyncio.Lock()
 
@@ -114,6 +118,48 @@ async def _sse_write(writer: asyncio.StreamWriter, text: str) -> None:
     await writer.drain()
 
 
+async def _sse_keepalive(writer: asyncio.StreamWriter) -> None:
+    """Write an SSE comment so clients and proxies keep the stream open."""
+    writer.write(b": keep-alive\n\n")
+    await writer.drain()
+
+
+async def _next_bridge_message(queue: asyncio.Queue,
+                               stream_writer: asyncio.StreamWriter | None = None
+                               ) -> dict:
+    """Wait for bridge activity, emitting SSE heartbeats when streaming."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + BRIDGE_IDLE_TIMEOUT
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        wait_time = remaining
+        if stream_writer is not None:
+            wait_time = min(wait_time, SSE_HEARTBEAT_INTERVAL)
+        try:
+            return await asyncio.wait_for(queue.get(), timeout=wait_time)
+        except asyncio.TimeoutError:
+            if stream_writer is None or loop.time() >= deadline:
+                raise
+            await _sse_keepalive(stream_writer)
+
+
+def _make_request_id() -> str:
+    return os.urandom(16).hex()
+
+
+async def _cancel_bridge_request(request_id: str) -> None:
+    writer = _ws_writer
+    if writer is None or writer.is_closing():
+        return
+    try:
+        payload = json.dumps({"type": "cancel", "request_id": request_id})
+        await _send_ws(writer, 0x1, payload.encode())
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # OpenAI API helpers
 # ---------------------------------------------------------------------------
@@ -124,6 +170,23 @@ def _make_openai_id() -> str:
     rnd = os.urandom(16).hex()
     ts = int(time.time())
     return f"chatcmpl-{rnd}-{ts}"
+
+
+def _extract_openai_text(content) -> list[str]:
+    """Extract plain text from string or OpenAI content-block messages."""
+    if isinstance(content, str):
+        return [content] if content else []
+    if not isinstance(content, list):
+        return []
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return parts
 
 
 def _make_openai_chunk(chat_id: str, created: int, content: str | None,
@@ -237,7 +300,7 @@ async def _recv_ws_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
 async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                        headers: dict) -> None:
     """Handle POST /chat -- validate, forward to WS, stream SSE back."""
-    global _pending_queue
+    global _pending_queue, _pending_request_id
 
     # Read body
     try:
@@ -270,7 +333,7 @@ async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
         return
 
     message = data["message"]
-    print(f"[TJproxy] >>> {message}", flush=True)
+    print(f"[TJproxy] >>> request ({len(str(message))} chars)", flush=True)
 
     # Must have a connected WS client
     if _ws_writer is None:
@@ -279,16 +342,23 @@ async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
         return
 
     # Create queue for this request
+    request_id = _make_request_id()
     _pending_queue = asyncio.Queue()
+    _pending_request_id = request_id
+    bridge_finished = False
 
     try:
         # Forward chat message to Extension
-        chat = json.dumps({"type": "chat", "message": message})
+        chat = json.dumps({
+            "type": "chat",
+            "message": message,
+            "request_id": request_id,
+        })
         await _send_ws(_ws_writer, 0x1, chat.encode())
 
         # Wait for first response to determine HTTP status
         try:
-            first = await asyncio.wait_for(_pending_queue.get(), timeout=30)
+            first = await _next_bridge_message(_pending_queue)
         except asyncio.TimeoutError:
             await _send_sse_header(writer, 502, "Bad Gateway")
             await _sse_write(writer, "[ERROR] Extension 响应超时")
@@ -297,11 +367,13 @@ async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
         typ = first.get("type")
 
         if typ == "error":
+            bridge_finished = True
             await _send_sse_header(writer, 503, "Service Unavailable")
             await _sse_write(writer, f"[ERROR] {first.get('message', '')}")
             return
 
         if typ == "_ws_closed":
+            bridge_finished = True
             await _send_sse_header(writer, 502, "Bad Gateway")
             await _sse_write(writer, "[ERROR] Extension 连接中途断开")
             return
@@ -314,6 +386,7 @@ async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
             response_text += first["content"]
             await _sse_write(writer, first["content"])
         elif typ == "done":
+            bridge_finished = True
             print(f"[TJproxy] <<< (empty)", flush=True)
             await _sse_write(writer, "[DONE]")
             return
@@ -321,7 +394,7 @@ async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
         # Process remaining responses
         while True:
             try:
-                msg = await asyncio.wait_for(_pending_queue.get(), timeout=30)
+                msg = await _next_bridge_message(_pending_queue, writer)
             except asyncio.TimeoutError:
                 await _sse_write(writer, "[ERROR] Extension 响应超时")
                 return
@@ -332,19 +405,29 @@ async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
                 response_text += msg["content"]
                 await _sse_write(writer, msg["content"])
             elif typ == "done":
-                print(f"[TJproxy] <<< {response_text}", flush=True)
+                bridge_finished = True
+                print(f"[TJproxy] <<< response ({len(response_text)} chars)",
+                      flush=True)
                 await _sse_write(writer, "[DONE]")
                 return
             elif typ == "error":
+                bridge_finished = True
                 await _sse_write(writer, f"[ERROR] {msg.get('message', '')}")
                 return
             elif typ == "_ws_closed":
+                bridge_finished = True
                 await _sse_write(writer, "[ERROR] Extension 连接中途断开")
                 return
+            elif typ in ("started", "activity"):
+                continue
             # Unknown type -- ignore
 
     finally:
-        _pending_queue = None
+        if not bridge_finished:
+            await _cancel_bridge_request(request_id)
+        if _pending_request_id == request_id:
+            _pending_queue = None
+            _pending_request_id = None
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +440,7 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
                                    headers: dict) -> None:
     """Handle POST /v1/chat/completions -- parse OpenAI request, forward to WS,
     return OpenAI-format response (streaming or non-streaming)."""
-    global _pending_queue
+    global _pending_queue, _pending_request_id
 
     # Read body
     try:
@@ -390,15 +473,13 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
                                  "Missing or invalid 'messages' field")
         return
 
-    # Build prompt by joining all message contents with newlines
+    # Build a plain-text prompt from string and content-block messages.
     prompt_parts: list[str] = []
     for m in data["messages"]:
         if isinstance(m, dict) and "content" in m:
-            c = m["content"]
-            if isinstance(c, str) and c:
-                prompt_parts.append(c)
+            prompt_parts.extend(_extract_openai_text(m["content"]))
     prompt = "\n".join(prompt_parts)
-    print(f"[TJproxy] >>> {prompt}", flush=True)
+    print(f"[TJproxy] >>> request ({len(prompt)} chars)", flush=True)
 
     if not prompt:
         await _send_openai_error(writer, 400, "Empty message content")
@@ -415,16 +496,23 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
         return
 
     # Create queue for this request
+    request_id = _make_request_id()
     _pending_queue = asyncio.Queue()
+    _pending_request_id = request_id
+    bridge_finished = False
 
     try:
         # Forward chat message to Extension
-        chat = json.dumps({"type": "chat", "message": prompt})
+        chat = json.dumps({
+            "type": "chat",
+            "message": prompt,
+            "request_id": request_id,
+        })
         await _send_ws(_ws_writer, 0x1, chat.encode())
 
         # Wait for first response to determine status / routing
         try:
-            first = await asyncio.wait_for(_pending_queue.get(), timeout=30)
+            first = await _next_bridge_message(_pending_queue)
         except asyncio.TimeoutError:
             await _send_openai_error(writer, 502,
                                      "Extension response timeout")
@@ -433,14 +521,19 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
         typ = first.get("type")
 
         if typ == "error":
+            bridge_finished = True
             await _send_openai_error(writer, 503,
                                      first.get("message", "Extension error"))
             return
 
         if typ == "_ws_closed":
+            bridge_finished = True
             await _send_openai_error(writer, 502,
                                      "Extension connection closed mid-request")
             return
+
+        if typ == "done":
+            bridge_finished = True
 
         if stream:
             # ----- streaming mode -----
@@ -452,6 +545,7 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
                 chunk = _make_openai_chunk(chat_id, created, first["content"])
                 await _sse_write(writer, chunk)
             elif typ == "done":
+                bridge_finished = True
                 print(f"[TJproxy] <<< (empty)", flush=True)
                 chunk = _make_openai_chunk(chat_id, created, None,
                                            finish_reason="stop")
@@ -462,8 +556,7 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
             # Process remaining WS messages
             while True:
                 try:
-                    msg = await asyncio.wait_for(_pending_queue.get(),
-                                                 timeout=30)
+                    msg = await _next_bridge_message(_pending_queue, writer)
                 except asyncio.TimeoutError:
                     err = _make_openai_error_json(502,
                                                   "Extension response timeout")
@@ -478,22 +571,29 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
                                                msg["content"])
                     await _sse_write(writer, chunk)
                 elif typ == "done":
-                    print(f"[TJproxy] <<< {response_text}", flush=True)
+                    bridge_finished = True
+                    print(
+                        f"[TJproxy] <<< response ({len(response_text)} chars)",
+                        flush=True)
                     chunk = _make_openai_chunk(chat_id, created, None,
                                                finish_reason="stop")
                     await _sse_write(writer, chunk)
                     await _sse_write(writer, "[DONE]")
                     return
                 elif typ == "error":
+                    bridge_finished = True
                     err = _make_openai_error_json(
                         503, msg.get("message", "Extension error"))
                     await _sse_write(writer, err)
                     return
                 elif typ == "_ws_closed":
+                    bridge_finished = True
                     err = _make_openai_error_json(
                         502, "Extension connection closed")
                     await _sse_write(writer, err)
                     return
+                elif typ in ("started", "activity"):
+                    continue
         else:
             # ----- non-streaming mode: accumulate full content -----
             full_content = ""
@@ -504,8 +604,7 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
             if typ != "done":
                 while True:
                     try:
-                        msg = await asyncio.wait_for(_pending_queue.get(),
-                                                     timeout=30)
+                        msg = await _next_bridge_message(_pending_queue)
                     except asyncio.TimeoutError:
                         await _send_openai_error(writer, 502,
                                                  "Extension response timeout")
@@ -516,19 +615,25 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
                     if typ == "token":
                         full_content += msg["content"]
                     elif typ == "done":
+                        bridge_finished = True
                         break
                     elif typ == "error":
+                        bridge_finished = True
                         await _send_openai_error(
                             writer, 503,
                             msg.get("message", "Extension error"))
                         return
                     elif typ == "_ws_closed":
+                        bridge_finished = True
                         await _send_openai_error(
                             writer, 502,
                             "Extension connection closed")
                         return
+                    elif typ in ("started", "activity"):
+                        continue
 
-            print(f"[TJproxy] <<< {full_content}", flush=True)
+            print(f"[TJproxy] <<< response ({len(full_content)} chars)",
+                  flush=True)
 
             # Build and send the complete OpenAI response
             response = _make_openai_response(chat_id, created, full_content)
@@ -536,7 +641,11 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
                              extra_headers={"Content-Type": "application/json"})
 
     finally:
-        _pending_queue = None
+        if not bridge_finished:
+            await _cancel_bridge_request(request_id)
+        if _pending_request_id == request_id:
+            _pending_queue = None
+            _pending_request_id = None
 
 
 # ---------------------------------------------------------------------------
@@ -547,10 +656,11 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
 async def _handle_ws(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                      headers: dict, query: str) -> bool:
     """Perform WebSocket upgrade, then relay Extension messages to HTTP."""
-    global _ws_writer, _pending_queue, _bridge_token
+    global _ws_writer, _pending_queue, _pending_request_id, _bridge_token
 
     origin = headers.get("origin", "")
-    if not origin.startswith("chrome-extension://"):
+    print(f"[TJproxy] WS origin: {origin!r}", flush=True)
+    if origin and not origin.startswith("chrome-extension://") and not origin.startswith("http://localhost"):
         await _send_http(writer, 403, "Forbidden")
         return False
 
@@ -607,7 +717,10 @@ async def _handle_ws(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                 except Exception:
                     continue
                 q = _pending_queue
-                if q is not None:
+                request_id = msg.get("request_id")
+                if (q is not None and
+                        (request_id is None or
+                         request_id == _pending_request_id)):
                     await q.put(msg)
 
             # Ignore other opcodes (binary, continuation)

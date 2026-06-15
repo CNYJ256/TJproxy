@@ -115,6 +115,7 @@ describe('parseSSELine — think_message is ignored', () => {
     );
     expect(result.tokens).toEqual([]);
     expect(result.isDone).toBe(false);
+    expect(result.hasActivity).toBe(true);
   });
 
   it('think_message does NOT leak into subsequent message tokens', () => {
@@ -153,6 +154,7 @@ describe('parseSSELine — edge cases', () => {
     const result = parseSSELine(state, 'data: {not valid json');
     expect(result.tokens).toEqual([]);
     expect(result.isDone).toBe(false);
+    expect(result.hasActivity).toBe(false);
   });
 
   it('ignores comment lines (starting with colon)', () => {
