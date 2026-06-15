@@ -1,0 +1,55 @@
+[agent]
+max_rounds = 32
+# Optional path relative to this TOML file:
+# prompt_path = "agent_prompt.txt"
+
+[service]
+base_url = "http://localhost:8765"
+startup_timeout_seconds = 10
+request_timeout_seconds = 330
+
+[limits]
+read_bytes = 1000000
+write_bytes = 1000000
+output_chars = 20000
+command_chars = 4000
+
+[powershell]
+executable = "pwsh"
+timeout_seconds = 60
+max_pipeline_stages = 4
+
+[[powershell.commands]]
+name = "git"
+allowed_subcommands = ["status", "diff", "log", "show", "rev-parse", "ls-files", "grep"]
+
+[[powershell.commands]]
+name = "rg"
+denied_args = ["-L", "--follow"]
+
+[[powershell.commands]]
+name = "python"
+allowed_subcommands = ["-m"]
+script_runner = true
+
+[[powershell.commands]]
+name = "pytest"
+
+[[powershell.commands]]
+name = "node"
+script_runner = true
+
+[[powershell.commands]]
+name = "pwsh"
+allowed_subcommands = ["-File"]
+script_runner = true
+
+[[powershell.commands]]
+name = "npm"
+allowed_subcommands = ["test", "run"]
+
+[[powershell.commands]]
+name = "Select-String"
+
+[[powershell.commands]]
+name = "Write-Output"
