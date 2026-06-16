@@ -20,9 +20,24 @@ class FinalResponse:
     content: str
 
 
-ALLOWED_TOOLS = {"read", "write", "edit", "powershell"}
+ALLOWED_TOOLS = {
+    "read",
+    "list_dir",
+    "read_range",
+    "search",
+    "project_map",
+    "context_pack",
+    "write",
+    "edit",
+    "powershell",
+}
 ARGUMENT_KEYS = {
     "read": ({"path"}, {"path"}),
+    "list_dir": ({"path"}, {"path"}),
+    "read_range": ({"path", "start", "end"}, {"path", "start", "end"}),
+    "search": ({"query", "path"}, {"query", "path"}),
+    "project_map": (set(), set()),
+    "context_pack": ({"paths", "query"}, {"paths", "query"}),
     "write": ({"path", "content"}, {"path", "content"}),
     "edit": (
         {"path", "old_text", "new_text"},
@@ -91,6 +106,32 @@ def _validate_arguments(tool: str, arguments: dict[str, Any]) -> None:
     if tool == "read":
         _require_string(arguments["path"], "read.arguments.path")
         return
+    if tool == "list_dir":
+        _require_string(arguments["path"], "list_dir.arguments.path")
+        return
+    if tool == "read_range":
+        _require_string(arguments["path"], "read_range.arguments.path")
+        _require_positive_int(arguments["start"], "read_range.arguments.start")
+        _require_positive_int(arguments["end"], "read_range.arguments.end")
+        if arguments["end"] < arguments["start"]:
+            raise ProtocolError("read_range.arguments.end must be >= start")
+        return
+    if tool == "search":
+        _require_string(arguments["query"], "search.arguments.query")
+        _require_string(arguments["path"], "search.arguments.path")
+        return
+    if tool == "project_map":
+        return
+    if tool == "context_pack":
+        paths = arguments["paths"]
+        if (
+            not isinstance(paths, list)
+            or not paths
+            or not all(isinstance(path, str) and path for path in paths)
+        ):
+            raise ProtocolError("context_pack.arguments.paths must be non-empty strings")
+        _require_string(arguments["query"], "context_pack.arguments.query")
+        return
     if tool == "write":
         _require_string(arguments["path"], "write.arguments.path")
         _require_string(arguments["content"], "write.arguments.content", allow_empty=True)
@@ -125,6 +166,11 @@ def _validate_arguments(tool: str, arguments: dict[str, Any]) -> None:
 def _require_string(value: Any, label: str, *, allow_empty: bool = False) -> None:
     if not isinstance(value, str) or (not allow_empty and not value):
         raise ProtocolError(f"{label} must be a string")
+
+
+def _require_positive_int(value: Any, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ProtocolError(f"{label} must be a positive integer")
 
 
 def protocol_error_message(message: str) -> str:

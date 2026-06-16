@@ -1,0 +1,42 @@
+[
+  {
+    "name": "hello.txt",
+    "content": "SGVsbG8gV29ybGQgZnJvbSB0eHQgZmlsZSE=",
+    "mime": "text/plain"
+  },
+  {
+    "name": "data.json",
+    "content": "eyJuYW1lIjogInRlc3QiLCAidmFsdWUiOiA0Mn0=",
+    "mime": "application/json"
+  },
+  {
+    "name": "script.py",
+    "content": "cHJpbnQoIkhlbGxvIGZyb20gUHl0aG9uISIp",
+    "mime": "text/x-python"
+  },
+  {
+    "name": "readme.md",
+    "content": "IyBUZXN0IE1hcmtkb3duCgpUaGlzIGlzIGEgKiptYXJrZG93bioqIGZpbGUu",
+    "mime": "text/markdown"
+  },
+  {
+    "name": "code.js",
+    "content": "Y29uc29sZS5sb2coIkhlbGxvIGZyb20gSlMhIik7",
+    "mime": "application/javascript"
+  },
+  {
+    "name": "style.css",
+    "content": "Ym9keSB7IGNvbG9yOiByZWQ7IH0=",
+    "mime": "text/css"
+  },
+  {
+    "name": "notes.xml",
+    "content": "PD94bWwgdmVyc2lvbj0iMS4wIj8+PG5vdGU+dGVzdDwvbm90ZT4=",
+    "mime": "application/xml"
+  },
+  {
+    "name": "config.yaml",
+    "content": "c2VydmVyOgogIHBvcnQ6IDgwODAKICBob3N0OiBsb2NhbGhvc3Q=",
+    "mime": "text/yaml"
+  }
+]

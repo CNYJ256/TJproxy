@@ -124,8 +124,45 @@ def test_dispatcher_bounds_read_output(tmp_path: Path):
         dispatcher.execute(ToolCall("read", {"path": "a.txt"}))
     )
 
-    assert result["stdout"] == "12345"
+    assert result["stdout"] == "1 | 1"
     assert result["truncated"] is True
+
+
+def test_dispatcher_formats_read_with_line_numbers(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("alpha\nbeta", encoding="utf-8")
+    workspace = Workspace(tmp_path, read_limit=100, write_limit=100)
+    dispatcher = ToolDispatcher(workspace, powershell=None, output_chars=100)
+
+    result = json.loads(
+        dispatcher.execute(ToolCall("read", {"path": "a.txt"}))
+    )
+
+    assert result["stdout"] == "1 | alpha\n2 | beta"
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "expected"),
+    [
+        ("list_dir", {"path": "."}, "a.txt"),
+        ("read_range", {"path": "a.txt", "start": 1, "end": 1}, "1 | needle"),
+        ("search", {"query": "needle", "path": "."}, "a.txt:1 | needle"),
+        ("project_map", {}, "a.txt"),
+        (
+            "context_pack",
+            {"paths": ["a.txt"], "query": "needle"},
+            "# a.txt",
+        ),
+    ],
+)
+def test_dispatcher_runs_local_exploration_tools(tmp_path: Path, tool, arguments, expected):
+    (tmp_path / "a.txt").write_text("needle\n", encoding="utf-8")
+    workspace = Workspace(tmp_path, read_limit=1000, write_limit=1000)
+    dispatcher = ToolDispatcher(workspace, powershell=None, output_chars=1000)
+
+    result = json.loads(dispatcher.execute(ToolCall(tool, arguments)))
+
+    assert result["ok"] is True
+    assert expected in result["stdout"]
 
 
 def test_dispatcher_returns_file_failure_as_tool_result(tmp_path: Path):

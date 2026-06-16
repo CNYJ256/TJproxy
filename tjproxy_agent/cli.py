@@ -12,12 +12,18 @@ from .powershell import PowerShellExecutor
 from .prompt import load_system_prompt
 from .protocol import ToolCall
 from .runner import AgentRunner, ToolDispatcher
+from .tui_support import PlanModeToolDispatcher
 from .workspace import ToolFailure, Workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="TJproxy local agent harness")
     parser.add_argument("--workspace", type=Path, required=True)
+    parser.add_argument(
+        "--plain",
+        action="store_true",
+        help="use the legacy stdin/stdout CLI instead of the Textual TUI",
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -96,6 +102,19 @@ def _audit_printer(stdout: TextIO):
 def _tool_call_summary(call: ToolCall) -> str:
     if call.tool == "read":
         return f"[tool] read {call.arguments['path']}"
+    if call.tool == "list_dir":
+        return f"[tool] list_dir {call.arguments['path']}"
+    if call.tool == "read_range":
+        return (
+            f"[tool] read_range {call.arguments['path']} "
+            f"L{call.arguments['start']}-L{call.arguments['end']}"
+        )
+    if call.tool == "search":
+        return f"[tool] search {call.arguments['path']} query={call.arguments['query']!r}"
+    if call.tool == "project_map":
+        return "[tool] project_map"
+    if call.tool == "context_pack":
+        return f"[tool] context_pack {', '.join(call.arguments['paths'])}"
     if call.tool == "write":
         return (
             f"[tool] write {call.arguments['path']} "
@@ -135,15 +154,25 @@ def main(argv: list[str] | None = None) -> int:
         tools = ToolDispatcher(
             workspace, shell, output_chars=config.limits.output_chars
         )
+        guarded_tools = PlanModeToolDispatcher(tools)
         system_prompt = load_system_prompt(
             args.config.resolve(), config.agent.prompt_path
         )
         runner = AgentRunner(
             client,
-            tools,
+            guarded_tools,
             max_rounds=config.agent.max_rounds,
             system_prompt=system_prompt,
         )
+        if not args.plain:
+            from .tui import AgentTuiApp
+
+            AgentTuiApp(
+                runner,
+                guarded_tools,
+                workspace=workspace.root,
+            ).run()
+            return 0
         return interactive_loop(runner)
     except (ConfigError, ServiceError, ToolFailure, OSError, ValueError) as exc:
         print(f"agent startup failed: {exc}", file=sys.stderr)

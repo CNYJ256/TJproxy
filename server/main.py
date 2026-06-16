@@ -332,6 +332,17 @@ async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
         await _send_http(writer, 400, "Bad Request")
         return
 
+    # Validate optional files
+    files = data.get("files")
+    if files is not None:
+        if not isinstance(files, list):
+            await _send_http(writer, 400, "Bad Request")
+            return
+        for f in files:
+            if not isinstance(f, dict) or not f.get("content"):
+                await _send_http(writer, 400, "Bad Request")
+                return
+
     message = data["message"]
     print(f"[TJproxy] >>> request ({len(str(message))} chars)", flush=True)
 
@@ -349,12 +360,10 @@ async def _handle_chat(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
 
     try:
         # Forward chat message to Extension
-        chat = json.dumps({
-            "type": "chat",
-            "message": message,
-            "request_id": request_id,
-        })
-        await _send_ws(_ws_writer, 0x1, chat.encode())
+        chat = {"type": "chat", "message": message, "request_id": request_id}
+        if files is not None:
+            chat["files"] = files
+        await _send_ws(_ws_writer, 0x1, json.dumps(chat).encode())
 
         # Wait for first response to determine HTTP status
         try:
@@ -485,6 +494,18 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
         await _send_openai_error(writer, 400, "Empty message content")
         return
 
+    # Validate optional files
+    files = data.get("files")
+    if files is not None:
+        if not isinstance(files, list):
+            await _send_openai_error(writer, 400, "Invalid 'files' field")
+            return
+        for f in files:
+            if not isinstance(f, dict) or not f.get("content"):
+                await _send_openai_error(writer, 400,
+                                         "Each file must have a non-empty 'content'")
+                return
+
     stream = data.get("stream", False)
     chat_id = _make_openai_id()
     created = int(time.time())
@@ -503,12 +524,10 @@ async def _handle_chat_completions(reader: asyncio.StreamReader,
 
     try:
         # Forward chat message to Extension
-        chat = json.dumps({
-            "type": "chat",
-            "message": prompt,
-            "request_id": request_id,
-        })
-        await _send_ws(_ws_writer, 0x1, chat.encode())
+        chat = {"type": "chat", "message": prompt, "request_id": request_id}
+        if files is not None:
+            chat["files"] = files
+        await _send_ws(_ws_writer, 0x1, json.dumps(chat).encode())
 
         # Wait for first response to determine status / routing
         try:

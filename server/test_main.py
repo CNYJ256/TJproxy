@@ -1021,3 +1021,295 @@ async def test_both_endpoints_work(ws_client):
     assert resp2.status_code == HTTPStatus.OK
     body = resp2.json()
     assert body["choices"][0]["message"]["content"] == "JSON"
+
+
+# ---------------------------------------------------------------------------
+# 20. OpenAI /v1/chat/completions — files support (non-streaming)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_openai_with_files_non_streaming(ws_client):
+    """POST /v1/chat/completions with files array → WS gets files in chat message.
+
+    Files are base64-encoded and forwarded as-is to the Extension.
+    The Extension receives them alongside the prompt and replies normally.
+    """
+    ws = ws_client
+
+    async def handle_ws():
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg.get("type") == "chat":
+                assert msg["message"] == "描述这个文件"
+                # Extension must receive the files array forwarded as-is
+                assert "files" in msg, "chat message must include files field"
+                assert len(msg["files"]) == 1
+                assert msg["files"][0]["name"] == "hello.txt"
+                assert msg["files"][0]["content"] == "SGVsbG8gV29ybGQ="
+                await ws.send(json.dumps({"type": "token", "content": "文件内容是"}))
+                await ws.send(json.dumps({"type": "token", "content": "Hello World"}))
+                await ws.send(json.dumps({"type": "done", "tokens": 2}))
+                return
+
+    ws_task = asyncio.create_task(handle_ws())
+
+    def post():
+        return requests.post(
+            f"{SERVER_URL}/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "描述这个文件"}],
+                "files": [
+                    {"name": "hello.txt", "content": "SGVsbG8gV29ybGQ="}
+                ],
+                "stream": False,
+            },
+            timeout=5,
+        )
+
+    resp = await asyncio.to_thread(post)
+    await ws_task
+
+    assert resp.status_code == HTTPStatus.OK
+    assert "application/json" in resp.headers.get("content-type", "")
+
+    body = resp.json()
+    assert body["object"] == "chat.completion"
+    assert body["model"] == "tongji-agent"
+    assert body["choices"][0]["message"]["role"] == "assistant"
+    assert body["choices"][0]["message"]["content"] == "文件内容是Hello World"
+    assert body["choices"][0]["finish_reason"] == "stop"
+
+
+# ---------------------------------------------------------------------------
+# 21. OpenAI /v1/chat/completions — files support (streaming)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_openai_with_files_streaming(ws_client):
+    """POST /v1/chat/completions with files + stream:true → SSE chunks.
+
+    Each chunk must be a valid OpenAI chat.completion.chunk JSON line,
+    ending with a finish_reason='stop' chunk and [DONE].
+    """
+    ws = ws_client
+
+    async def handle_ws():
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg.get("type") == "chat":
+                assert "files" in msg, "chat message must include files field"
+                assert len(msg["files"]) == 2
+                assert msg["files"][0]["name"] == "a.txt"
+                assert msg["files"][0]["content"] == "YQ=="
+                assert msg["files"][1]["name"] == "b.txt"
+                assert msg["files"][1]["content"] == "Yg=="
+                await ws.send(json.dumps({"type": "token", "content": "分析中"}))
+                await ws.send(json.dumps({"type": "token", "content": "..."}))
+                await ws.send(json.dumps({"type": "done", "tokens": 2}))
+                return
+
+    ws_task = asyncio.create_task(handle_ws())
+
+    def post():
+        return requests.post(
+            f"{SERVER_URL}/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "对比这两个文件"}],
+                "files": [
+                    {"name": "a.txt", "content": "YQ=="},
+                    {"name": "b.txt", "content": "Yg=="},
+                ],
+                "stream": True,
+            },
+            stream=True,
+            timeout=5,
+        )
+
+    resp = await asyncio.to_thread(post)
+    assert resp.status_code == HTTPStatus.OK
+
+    lines = []
+    for line in resp.iter_lines(decode_unicode=True):
+        if line:
+            lines.append(line)
+        if len(lines) >= 6:
+            break
+    resp.close()
+
+    await ws_task
+
+    data_lines = [l for l in lines if l.startswith("data: ")]
+
+    chunks = []
+    for dl in data_lines:
+        payload = dl[len("data: "):]
+        if payload == "[DONE]":
+            chunks.append("[DONE]")
+        else:
+            chunks.append(json.loads(payload))
+
+    token_contents = []
+    for c in chunks:
+        if c == "[DONE]":
+            continue
+        if c["object"] == "chat.completion.chunk":
+            delta = c["choices"][0].get("delta", {})
+            if "content" in delta:
+                token_contents.append(delta["content"])
+
+    assert "分析中" in token_contents, f"token_contents={token_contents}"
+    assert "..." in token_contents, f"token_contents={token_contents}"
+
+    # Last non-[DONE] chunk must have finish_reason
+    finish_chunks = [c for c in chunks if c != "[DONE]" and
+                     c["choices"][0].get("finish_reason")]
+    assert len(finish_chunks) >= 1
+    assert finish_chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+    assert "[DONE]" in chunks
+
+
+# ---------------------------------------------------------------------------
+# 22. OpenAI — files content must be base64
+# ---------------------------------------------------------------------------
+
+
+def test_openai_files_content_must_be_base64():
+    """files[] entries with missing or empty 'content' → 400.
+
+    A file must have a non-empty base64-encoded content string.
+    Missing or empty content is rejected before reaching the Extension.
+    """
+    # Case 1: content field missing entirely
+    resp = requests.post(
+        f"{SERVER_URL}/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "files": [{"name": "empty.txt"}],
+        },
+        timeout=5,
+    )
+    assert resp.status_code == HTTPStatus.BAD_REQUEST, \
+        f"Expected 400 for missing content, got {resp.status_code}"
+    body = resp.json()
+    assert "error" in body
+
+    # Case 2: content field present but empty string
+    resp2 = requests.post(
+        f"{SERVER_URL}/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "files": [{"name": "empty.txt", "content": ""}],
+        },
+        timeout=5,
+    )
+    assert resp2.status_code == HTTPStatus.BAD_REQUEST, \
+        f"Expected 400 for empty content, got {resp2.status_code}"
+    body2 = resp2.json()
+    assert "error" in body2
+
+
+# ---------------------------------------------------------------------------
+# 23. OpenAI — files field is optional (backward compatibility)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_openai_files_optional(ws_client):
+    """Omitting the files field must not change existing behavior.
+
+    When files is absent, the chat message forwarded to the Extension
+    must not include a files key, and the request must complete normally.
+    This guards backward compatibility.
+    """
+    ws = ws_client
+
+    async def handle_ws():
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg.get("type") == "chat":
+                assert msg["message"] == "plain request"
+                # No files key at all when not provided
+                assert "files" not in msg, \
+                    "chat message must not include files when none were sent"
+                await ws.send(json.dumps({"type": "token", "content": "ok"}))
+                await ws.send(json.dumps({"type": "done", "tokens": 1}))
+                return
+
+    ws_task = asyncio.create_task(handle_ws())
+
+    def post():
+        return requests.post(
+            f"{SERVER_URL}/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "plain request"}],
+                "stream": False,
+            },
+            timeout=5,
+        )
+
+    resp = await asyncio.to_thread(post)
+    await ws_task
+
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"] == "ok"
+    assert body["object"] == "chat.completion"
+
+
+# ---------------------------------------------------------------------------
+# 24. Legacy /chat endpoint — files support
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_endpoint_with_files(ws_client):
+    """The legacy /chat endpoint also forwards files to the Extension.
+
+    Same forwarding logic as the OpenAI endpoint: files array is passed
+    through as-is in the WS chat message alongside the prompt.
+    """
+    ws = ws_client
+
+    async def handle_ws():
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg.get("type") == "chat":
+                assert msg["message"] == "summarize"
+                assert "files" in msg, "chat message must include files field"
+                assert len(msg["files"]) == 1
+                assert msg["files"][0]["name"] == "notes.txt"
+                assert msg["files"][0]["content"] == "Tm90ZXMgY29udGVudA=="
+                await ws.send(json.dumps({"type": "token", "content": "摘要内容"}))
+                await ws.send(json.dumps({"type": "done", "tokens": 1}))
+                return
+
+    ws_task = asyncio.create_task(handle_ws())
+
+    def post():
+        return requests.post(
+            f"{SERVER_URL}/chat",
+            json={
+                "message": "summarize",
+                "files": [
+                    {"name": "notes.txt", "content": "Tm90ZXMgY29udGVudA=="}
+                ],
+            },
+            stream=True,
+            timeout=5,
+        )
+
+    resp = await asyncio.to_thread(post)
+
+    assert resp.status_code == HTTPStatus.OK
+    assert "text/event-stream" in resp.headers.get("content-type", "")
+
+    lines = list(resp.iter_lines(decode_unicode=True))
+    resp.close()
+
+    await ws_task
+
+    assert any("摘要内容" in line for line in lines), f"SSE lines: {lines}"
+    assert any("[DONE]" in line for line in lines), f"SSE lines: {lines}"

@@ -3,7 +3,11 @@ const API_URL = 'https://agent.tongji.edu.cn/api/bypass/app/?Version=2023-08-01&
 const {
   buildBridgeUrl,
   buildChatRequest,
+  buildChatRequestWithFiles,
+  buildFileUploadConfigRequest,
+  buildUploadRawRequest,
   parseSSELine,
+  parseUploadResponse,
 } = globalThis.TJproxyOffscreenUtils;
 
 let ws = null;
@@ -35,6 +39,38 @@ async function getBridgeToken() {
   });
 }
 
+async function uploadAndGetFiles(files, csrf, cookieHeader) {
+  if (!files || files.length === 0) return [];
+
+  const results = [];
+  for (const file of files) {
+    try {
+      const configReq = buildFileUploadConfigRequest(csrf, cookieHeader);
+      await fetch(configReq.url, { headers: configReq.headers });
+
+      const contentBytes = Uint8Array.from(atob(file.content), c => c.charCodeAt(0));
+      const uploadReq = buildUploadRawRequest(contentBytes, csrf, cookieHeader);
+
+      const uploadResp = await fetch(uploadReq.url, {
+        method: 'POST',
+        headers: uploadReq.headers,
+        body: uploadReq.body,
+      });
+
+      if (!uploadResp.ok) continue;
+
+      const respJson = await uploadResp.text();
+      const parsed = parseUploadResponse(respJson);
+      if (parsed) {
+        results.push({ path: parsed.path, name: file.name, size: parsed.size });
+      }
+    } catch {
+      // Skip files that fail to upload
+    }
+  }
+  return results;
+}
+
 function send(ws, data, requestId = null) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     const payload = requestId ? { ...data, request_id: requestId } : data;
@@ -42,7 +78,7 @@ function send(ws, data, requestId = null) {
   }
 }
 
-async function handleChat(ws, message, requestId) {
+async function handleChat(ws, message, requestId, files) {
   console.log(`[TJproxy] >>> ${message}`);
 
   const controller = new AbortController();
@@ -63,11 +99,20 @@ async function handleChat(ws, message, requestId) {
       return;
     }
 
+    let uploadedFiles = [];
+    if (files && files.length > 0) {
+      uploadedFiles = await uploadAndGetFiles(files, csrf, cookieHeader);
+    }
+
+    const chatReq = uploadedFiles.length > 0
+      ? buildChatRequestWithFiles(message, appId, csrf, cookieHeader, uploadedFiles)
+      : buildChatRequest(message, appId, csrf, cookieHeader);
+
     let response;
     try {
       response = await fetch(
         API_URL,
-        buildChatRequest(message, appId, csrf, cookieHeader, controller.signal),
+        { ...chatReq, signal: controller.signal },
       );
     } catch (err) {
       if (!controller.signal.aborted) {
@@ -181,7 +226,7 @@ async function connect() {
     }
 
     if (data.type === 'chat' && data.message) {
-      void handleChat(ws, data.message, data.request_id ?? null);
+      void handleChat(ws, data.message, data.request_id ?? null, data.files ?? null);
     } else if (data.type === 'cancel' && data.request_id) {
       activeRequests.get(data.request_id)?.abort();
     }

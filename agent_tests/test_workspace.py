@@ -87,3 +87,86 @@ def test_windows_device_names_are_rejected(tmp_path: Path, path: str):
 
     with pytest.raises(ToolFailure, match="WORKSPACE_ESCAPE"):
         workspace.write(path, "data")
+
+
+def test_list_dir_returns_workspace_entries_with_metadata(tmp_path: Path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+    workspace = make_workspace(tmp_path)
+
+    result = workspace.list_dir(".")
+
+    assert "README.md\tfile\t5 bytes" in result
+    assert "pkg\tdir" in result
+
+
+def test_read_range_returns_numbered_inclusive_lines_without_full_read_limit(tmp_path: Path):
+    (tmp_path / "large.txt").write_text(
+        "\n".join(f"line {number}" for number in range(1, 101)),
+        encoding="utf-8",
+    )
+    workspace = make_workspace(tmp_path, read_limit=40)
+
+    result = workspace.read_range("large.txt", 10, 12)
+
+    assert result == "10 | line 10\n11 | line 11\n12 | line 12"
+
+
+def test_search_returns_matching_relative_paths_and_line_numbers(tmp_path: Path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "runner.py").write_text(
+        "class AgentRunner:\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "notes.txt").write_text("nothing here\n", encoding="utf-8")
+    workspace = make_workspace(tmp_path)
+
+    result = workspace.search("AgentRunner", ".")
+
+    assert "pkg/runner.py:1 | class AgentRunner:" in result
+    assert "notes.txt" not in result
+
+
+def test_project_map_summarizes_source_files(tmp_path: Path):
+    (tmp_path / "runner.py").write_text(
+        "class AgentRunner:\n    pass\n\ndef parse_response():\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "config.toml").write_text("[limits]\nread_bytes = 100\n", encoding="utf-8")
+    workspace = make_workspace(tmp_path)
+
+    result = workspace.project_map()
+
+    assert "runner.py" in result
+    assert "- class AgentRunner" in result
+    assert "- def parse_response()" in result
+    assert "language: Python" in result
+    assert "1 | class AgentRunner:" in result
+    assert "config.toml" in result
+
+
+def test_context_pack_returns_query_focused_numbered_snippets(tmp_path: Path):
+    (tmp_path / "runner.py").write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "class ToolDispatcher:",
+                "    pass",
+                "",
+                "class AgentRunner:",
+                "    def run(self):",
+                "        return 'ok'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workspace = make_workspace(tmp_path)
+
+    result = workspace.context_pack(["runner.py"], "AgentRunner")
+
+    assert "# runner.py" in result
+    assert "L3-L8" in result
+    assert "6 | class AgentRunner:" in result
+    assert "1 | from __future__" not in result

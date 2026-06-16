@@ -260,3 +260,273 @@ describe('buildChatRequest', () => {
     expect(JSON.parse(options.body)).toMatchObject({ Query: 'hello', AppID: 'app-1' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests: file upload — buildFileUploadConfigRequest
+// ---------------------------------------------------------------------------
+describe('buildFileUploadConfigRequest', () => {
+  const {
+    buildFileUploadConfigRequest,
+  } = globalThis.TJproxyOffscreenUtils;
+
+  it('builds a GET request for the upload config endpoint', () => {
+    const result = buildFileUploadConfigRequest('token-csrf', 'session=abc');
+
+    expect(result.url).toBe(
+      'https://agent.tongji.edu.cn/api/bypass/up?Action=GetConfig&Version=2022-01-01&Region=cn-north-1'
+    );
+    expect(result.headers).toEqual({
+      'x-csrf-token': 'token-csrf',
+      'Cookie': 'session=abc',
+    });
+  });
+
+  it('works with empty cookie header', () => {
+    const result = buildFileUploadConfigRequest('csrf', '');
+
+    expect(result.url).toContain('Action=GetConfig');
+    expect(result.headers).toEqual({
+      'x-csrf-token': 'csrf',
+      'Cookie': '',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: file upload — computeSha256Hex
+// ---------------------------------------------------------------------------
+describe('computeSha256Hex', () => {
+  const {
+    computeSha256Hex,
+  } = globalThis.TJproxyOffscreenUtils;
+
+  it('returns the SHA-256 hex digest for known input', () => {
+    // "Hello" encoded as bytes: [0x48, 0x65, 0x6c, 0x6c, 0x6f]
+    const input = new Uint8Array([0x48, 0x65, 0x6c, 0x6c, 0x6f]);
+
+    // Expected: SHA-256 of "Hello" —
+    // echo -n 'Hello' | sha256sum
+    // 185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969
+    const result = computeSha256Hex(input);
+
+    expect(result).toBe(
+      '185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969'
+    );
+  });
+
+  it('returns a 64-character hex string for any input', () => {
+    const input = new Uint8Array([0x00, 0x01, 0x02]);
+    const result = computeSha256Hex(input);
+
+    expect(result).toHaveLength(64);
+    expect(result).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('returns the correct digest for an empty buffer', () => {
+    // SHA-256 of empty string: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    const result = computeSha256Hex(new Uint8Array(0));
+
+    expect(result).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: file upload — buildUploadRawRequest
+// ---------------------------------------------------------------------------
+describe('buildUploadRawRequest', () => {
+  const {
+    buildUploadRawRequest,
+  } = globalThis.TJproxyOffscreenUtils;
+
+  it('builds a POST request with correct URL, headers, and body', () => {
+    const fileBytes = new Uint8Array([0x48, 0x65, 0x6c, 0x6c, 0x6f]); // "Hello"
+    const sha256Hex = '185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969';
+
+    const result = buildUploadRawRequest(fileBytes, 'csrf-token', 'cookie=val');
+
+    expect(result.url).toBe(
+      `https://agent.tongji.edu.cn/api/bypass/up?Action=UploadRaw&Version=2022-01-01&Region=cn-north-1&Id=${sha256Hex}&Expire=720h`
+    );
+    expect(result.headers).toEqual({
+      'Content-Type': 'text/plain',
+      'x-csrf-token': 'csrf-token',
+      'Cookie': 'cookie=val',
+    });
+    expect(result.body).toBe(fileBytes);
+  });
+
+  it('computes SHA-256 from the file bytes for the Id parameter', () => {
+    const fileBytes = new Uint8Array([0x41]); // "A"
+    const expectedSha = '559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd';
+
+    const result = buildUploadRawRequest(fileBytes, 'csrf', 'c=1');
+
+    expect(result.url).toContain(`Id=${expectedSha}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: file upload — parseUploadResponse
+// ---------------------------------------------------------------------------
+describe('parseUploadResponse', () => {
+  const {
+    parseUploadResponse,
+  } = globalThis.TJproxyOffscreenUtils;
+
+  it('extracts Path, Size, and Sha256 from a successful upload response', () => {
+    const body = JSON.stringify({
+      Result: {
+        Path: 'upload/full/xx/yy/hash',
+        Size: 11,
+        Sha256: 'abc',
+      },
+    });
+
+    const result = parseUploadResponse(body);
+
+    expect(result).toEqual({
+      path: 'upload/full/xx/yy/hash',
+      size: 11,
+      sha256: 'abc',
+    });
+  });
+
+  it('handles response with extra fields like ShortLink and PresignKey', () => {
+    const body = JSON.stringify({
+      Result: {
+        Path: 'upload/full/a5/91/sha256hexdigest',
+        Size: 42,
+        Sha256: 'sha256hexdigest',
+        ShortLink: 'https://s.tongji.edu.cn/abc',
+        PresignKey: 'presign-key-value',
+      },
+    });
+
+    const result = parseUploadResponse(body);
+
+    expect(result).toEqual({
+      path: 'upload/full/a5/91/sha256hexdigest',
+      size: 42,
+      sha256: 'sha256hexdigest',
+    });
+  });
+
+  it('returns null for a response without Result', () => {
+    const body = JSON.stringify({ Error: 'something went wrong' });
+
+    const result = parseUploadResponse(body);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null for non-JSON input', () => {
+    const result = parseUploadResponse('not json at all');
+
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: file upload — buildChatRequestWithFiles
+// ---------------------------------------------------------------------------
+describe('buildChatRequestWithFiles', () => {
+  const {
+    buildChatRequestWithFiles,
+  } = globalThis.TJproxyOffscreenUtils;
+
+  it('builds a chat request with files in QueryExtends.Files', () => {
+    const files = [
+      { path: 'upload/full/a5/91/abc', name: 'hello.txt', size: 11 },
+    ];
+
+    const result = buildChatRequestWithFiles(
+      'Describe this file',
+      'd7eb286lvndfvk7hrsd0',
+      'csrf-value',
+      'tenant=abc',
+      files
+    );
+
+    expect(result.method).toBe('POST');
+    expect(result.headers).toEqual({
+      'Content-Type': 'application/json',
+      'x-csrf-token': 'csrf-value',
+      'Cookie': 'tenant=abc',
+    });
+
+    const body = JSON.parse(result.body);
+    expect(body.Query).toBe('Describe this file');
+    expect(body.AppID).toBe('d7eb286lvndfvk7hrsd0');
+    expect(body.InputData).toEqual([]);
+    expect(body.QueryExtends.Files).toBeInstanceOf(Array);
+    expect(body.QueryExtends.Files).toHaveLength(1);
+  });
+
+  it('auto-generates the download URL from each file path', () => {
+    const files = [
+      { path: 'upload/full/a5/91/sha256hex', name: 'hello.txt', size: 11 },
+    ];
+
+    const result = buildChatRequestWithFiles(
+      'hi',
+      'app-1',
+      'csrf',
+      'cookie',
+      files
+    );
+
+    const body = JSON.parse(result.body);
+    const fileEntry = body.QueryExtends.Files[0];
+
+    expect(fileEntry.Path).toBe('upload/full/a5/91/sha256hex');
+    expect(fileEntry.Name).toBe('hello.txt');
+    expect(fileEntry.Size).toBe(11);
+
+    // The download URL should encode the path and include the required query params
+    const encodedPath = encodeURIComponent('upload/full/a5/91/sha256hex');
+    expect(fileEntry.Url).toBe(
+      `https://agent.tongji.edu.cn/api/proxy/down?Action=Download&Version=2022-01-01&IsAnonymous=true&Path=${encodedPath}`
+    );
+  });
+
+  it('handles multiple files in a single request', () => {
+    const files = [
+      { path: 'upload/full/a/b/file1', name: 'a.txt', size: 10 },
+      { path: 'upload/full/c/d/file2', name: 'b.txt', size: 20 },
+    ];
+
+    const result = buildChatRequestWithFiles(
+      'Compare these files',
+      'app-2',
+      'csrf',
+      'cookie',
+      files
+    );
+
+    const body = JSON.parse(result.body);
+    expect(body.QueryExtends.Files).toHaveLength(2);
+
+    expect(body.QueryExtends.Files[0].Name).toBe('a.txt');
+    expect(body.QueryExtends.Files[0].Path).toBe('upload/full/a/b/file1');
+    expect(body.QueryExtends.Files[0].Size).toBe(10);
+    expect(body.QueryExtends.Files[0].Url).toContain('Path=');
+
+    expect(body.QueryExtends.Files[1].Name).toBe('b.txt');
+    expect(body.QueryExtends.Files[1].Size).toBe(20);
+  });
+
+  it('handles empty files array (no attachments)', () => {
+    const result = buildChatRequestWithFiles(
+      'plain message',
+      'app-3',
+      'csrf',
+      'cookie',
+      []
+    );
+
+    const body = JSON.parse(result.body);
+    expect(body.QueryExtends.Files).toEqual([]);
+  });
+});

@@ -61,6 +61,49 @@ def test_powershell_requires_structured_pipeline():
 
 
 @pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("list_dir", {"path": "."}),
+        ("read_range", {"path": "tjproxy_agent/runner.py", "start": 1, "end": 20}),
+        ("search", {"query": "class AgentRunner", "path": "."}),
+        ("project_map", {}),
+        (
+            "context_pack",
+            {"paths": ["tjproxy_agent/runner.py"], "query": "AgentRunner"},
+        ),
+    ],
+)
+def test_parse_local_exploration_tools(tool, arguments):
+    parsed = parse_response(
+        json.dumps(
+            {"type": "tool_call", "tool": tool, "arguments": arguments}
+        )
+    )
+
+    assert parsed == ToolCall(tool=tool, arguments=arguments)
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "message"),
+    [
+        ("list_dir", {"path": ""}, "list_dir"),
+        ("read_range", {"path": "a.txt", "start": 0, "end": 2}, "read_range"),
+        ("read_range", {"path": "a.txt", "start": 3, "end": 2}, "read_range"),
+        ("search", {"query": "", "path": "."}, "search"),
+        ("context_pack", {"paths": [], "query": "x"}, "context_pack"),
+        ("context_pack", {"paths": ["a.txt"], "query": ""}, "context_pack"),
+    ],
+)
+def test_rejects_invalid_local_exploration_arguments(tool, arguments, message):
+    text = json.dumps(
+        {"type": "tool_call", "tool": tool, "arguments": arguments}
+    )
+
+    with pytest.raises(ProtocolError, match=message):
+        parse_response(text)
+
+
+@pytest.mark.parametrize(
     "arguments",
     [
         {"pipeline": []},

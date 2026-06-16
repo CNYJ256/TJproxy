@@ -39,9 +39,50 @@ class ToolDispatcher:
         try:
             if call.tool == "read":
                 content = self.workspace.read(call.arguments["path"])
-                stdout, truncated = self._bounded(content)
+                stdout, truncated = self._bounded(self._number_lines(content))
                 return tool_result_message(
                     "read", ok=True, stdout=stdout, truncated=truncated
+                )
+            if call.tool == "list_dir":
+                stdout, truncated = self._bounded(
+                    self.workspace.list_dir(call.arguments["path"])
+                )
+                return tool_result_message(
+                    "list_dir", ok=True, stdout=stdout, truncated=truncated
+                )
+            if call.tool == "read_range":
+                stdout, truncated = self._bounded(
+                    self.workspace.read_range(
+                        call.arguments["path"],
+                        call.arguments["start"],
+                        call.arguments["end"],
+                    )
+                )
+                return tool_result_message(
+                    "read_range", ok=True, stdout=stdout, truncated=truncated
+                )
+            if call.tool == "search":
+                stdout, truncated = self._bounded(
+                    self.workspace.search(
+                        call.arguments["query"], call.arguments["path"]
+                    )
+                )
+                return tool_result_message(
+                    "search", ok=True, stdout=stdout, truncated=truncated
+                )
+            if call.tool == "project_map":
+                stdout, truncated = self._bounded(self.workspace.project_map())
+                return tool_result_message(
+                    "project_map", ok=True, stdout=stdout, truncated=truncated
+                )
+            if call.tool == "context_pack":
+                stdout, truncated = self._bounded(
+                    self.workspace.context_pack(
+                        call.arguments["paths"], call.arguments["query"]
+                    )
+                )
+                return tool_result_message(
+                    "context_pack", ok=True, stdout=stdout, truncated=truncated
                 )
             if call.tool == "write":
                 self.workspace.write(
@@ -89,6 +130,12 @@ class ToolDispatcher:
         if len(value) <= self.output_chars:
             return value, False
         return value[: self.output_chars], True
+
+    def _number_lines(self, value: str) -> str:
+        return "\n".join(
+            f"{line_number} | {line}"
+            for line_number, line in enumerate(value.splitlines(), 1)
+        )
 
 
 AuditCallback = Callable[[tuple[str, object]], None]
