@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,6 @@ from .client import ServiceError
 from .runner import RunOutcome
 from .tui_support import (
     AgentUiState,
-    PlanModeToolDispatcher,
     TuiEventFormatter,
     handle_slash_command,
     prepare_task,
@@ -80,6 +80,9 @@ class AgentTuiApp(App[None]):
         Binding("f4", "paste_to_input", "粘贴", show=True, priority=True),
         Binding("ctrl+v", "paste_to_input", "粘贴", show=False, priority=True),
         Binding("f9", "copy_output", "复制输出", show=True, priority=True),
+        Binding("f5", "approve_pending", "批准一次", show=True, priority=True),
+        Binding("escape", "reject_pending", "拒绝", show=True, priority=True),
+        Binding("d", "toggle_approval_details", "详情", show=False),
         Binding("ctrl+c", "interrupt", "中断", show=True),
         Binding("ctrl+d", "quit", "退出", show=True),
         Binding("ctrl+p", "history_previous", "Previous", show=False),
@@ -89,13 +92,13 @@ class AgentTuiApp(App[None]):
     def __init__(
         self,
         runner: Any,
-        guarded_tools: PlanModeToolDispatcher,
+        tools: Any,
         *,
         workspace: Path,
     ):
         super().__init__()
         self.runner = runner
-        self.guarded_tools = guarded_tools
+        self.tools = tools
         self.state = AgentUiState(workspace=workspace)
         self.formatter = TuiEventFormatter()
         self.current_worker = None
@@ -108,6 +111,14 @@ class AgentTuiApp(App[None]):
         self._tool_entries: list[str] = []
         self._pending_tool_index: int | None = None
         self._pending_tool_call_plain = ""
+        self._approval_card: Static | None = None
+        self._approval_details_visible = False
+        self._pending_approval_id: str | None = None
+        self._pending_approval_raw: dict[str, Any] = {}
+
+    @property
+    def policy_profile(self) -> str:
+        return "plan" if self.state.mode == "plan" else "dev"
 
     @property
     def status_text(self) -> str:
@@ -207,7 +218,7 @@ class AgentTuiApp(App[None]):
         self._visible_run_id = self._run_id
         run_id = self._run_id
         self.state.running = True
-        self.guarded_tools.plan_mode = self.state.mode == "plan"
+        self.runner.policy_profile = self.policy_profile
         self._refresh_status()
         self._write_log(f"[bold blue]用户[/bold blue] {task}", plain=f"用户 {task}")
         self._reset_tool_block_state()
@@ -233,6 +244,11 @@ class AgentTuiApp(App[None]):
 
     def _finish_outcome(self, run_id: int, outcome: RunOutcome) -> None:
         if run_id != self._visible_run_id:
+            return
+        if outcome.status == "approval_required":
+            self.state.running = False
+            self._refresh_status()
+            self._show_approval_card(outcome.content)
             return
         self.state.rounds += outcome.rounds
         self.state.running = False
@@ -273,7 +289,7 @@ class AgentTuiApp(App[None]):
 
     def _handle_command(self, command: str) -> None:
         result = handle_slash_command(command, self.state, self.runner)
-        self.guarded_tools.plan_mode = self.state.mode == "plan"
+        self.runner.policy_profile = self.policy_profile
         if result.kind == "exit":
             self.exit()
             return
@@ -287,6 +303,65 @@ class AgentTuiApp(App[None]):
             return
         self._write_log(f"[cyan]{result.message}[/cyan]", plain=result.message)
         self._refresh_status()
+
+    def _show_approval_card(self, raw: str) -> None:
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            result = {}
+        metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
+        approval_id = metadata.get("approval_id") if isinstance(metadata, dict) else None
+        self._pending_approval_id = approval_id if isinstance(approval_id, str) else None
+        self._pending_approval_raw = result
+        text = Text("需要确认\n", style="bold yellow")
+        text.append(str(result.get("stdout", "")), style="white")
+        text.append("\n原因：", style="yellow")
+        text.append(str(result.get("stderr", "")), style="white")
+        text.append("\n操作：F5 批准一次 / Esc 拒绝 / d 展开详情", style="cyan")
+        if self._approval_card is not None:
+            self._approval_card.remove()
+        self._approval_card = Static(text, classes="approval-card")
+        self._approval_card.plain_text = text.plain
+        self._log().mount(self._approval_card)
+        self._transcript.append(text.plain)
+
+    def action_approve_pending(self) -> None:
+        if self._pending_approval_id is None:
+            self._write_log("[yellow]当前没有待批准操作。[/yellow]", plain="当前没有待批准操作。")
+            return
+        outcome = self.runner.approve_pending(self._pending_approval_id)
+        self._pending_approval_id = None
+        if self._approval_card is not None:
+            self._approval_card.remove()
+            self._approval_card = None
+        self._finish_outcome(self._visible_run_id, outcome)
+
+    def action_reject_pending(self) -> None:
+        if self._pending_approval_id is None:
+            return
+        outcome = self.runner.reject_pending(self._pending_approval_id)
+        self._pending_approval_id = None
+        if self._approval_card is not None:
+            self._approval_card.remove()
+            self._approval_card = None
+        self._finish_outcome(self._visible_run_id, outcome)
+
+    def action_toggle_approval_details(self) -> None:
+        if self._approval_card is None:
+            return
+        self._approval_details_visible = not self._approval_details_visible
+        if not self._approval_details_visible:
+            self._show_approval_card(
+                json.dumps(self._pending_approval_raw, ensure_ascii=False)
+            )
+            return
+        text = Text("审批详情\n", style="bold yellow")
+        text.append(
+            json.dumps(self._pending_approval_raw, ensure_ascii=False, indent=2),
+            style="white",
+        )
+        self._approval_card.update(text)
+        self._approval_card.plain_text = text.plain
 
     def _refresh_status(self) -> None:
         self.query_one("#status-panel", Static).update(self.status_text)

@@ -119,6 +119,16 @@ def test_slash_commands_update_ui_state_and_runner():
     assert exit_result.kind == "exit"
 
 
+def test_slash_commands_update_policy_profile_state():
+    runner = FakeRunner()
+    state = AgentUiState(workspace=Path("D:/repo"), mode="default", rounds=2)
+
+    assert handle_slash_command("/plan", state, runner).message == "已进入计划模式"
+    assert state.mode == "plan"
+    assert handle_slash_command("/default", state, runner).message == "已进入默认模式"
+    assert state.mode == "default"
+
+
 def test_help_and_status_messages_are_chinese_while_commands_stay_english():
     runner = FakeRunner()
     state = AgentUiState(workspace=Path("D:/repo"), mode="default", rounds=2)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -246,6 +247,12 @@ class AgentRunner:
                     return RunOutcome("completed", response.content, round_number)
                 self.audit(("tool_call", response))
                 result = self.tools.execute(response)
+                parsed_result = _parse_tool_result(result)
+                if parsed_result.get("error_code") == "APPROVAL_REQUIRED":
+                    approval_id = parsed_result.get("metadata", {}).get("approval_id")
+                    if isinstance(approval_id, str):
+                        self.pending_approval = (approval_id, response)
+                    return RunOutcome("approval_required", result, round_number)
                 self.audit(("tool_result", result))
                 self.messages.append({"role": "user", "content": result})
             self._clear_tool_approvals()
@@ -276,3 +283,36 @@ class AgentRunner:
     def _clear_tool_approvals(self) -> None:
         if hasattr(self.tools, "clear_approvals"):
             self.tools.clear_approvals()
+
+    def approve_pending(self, approval_id: str) -> RunOutcome:
+        if self.pending_approval is None or self.pending_approval[0] != approval_id:
+            return RunOutcome("completed", "没有待批准的操作", 0)
+        _, call = self.pending_approval
+        self.pending_approval = None
+        if hasattr(self.tools, "approve_once"):
+            self.tools.approve_once(approval_id)
+        result = self.tools.execute(call)
+        self.audit(("tool_result", result))
+        self.messages.append({"role": "user", "content": result})
+        return RunOutcome("completed", result, 1)
+
+    def reject_pending(self, approval_id: str) -> RunOutcome:
+        if self.pending_approval is not None and self.pending_approval[0] == approval_id:
+            self.pending_approval = None
+        denial = tool_result_message(
+            "approval",
+            ok=False,
+            stderr="用户拒绝了该操作",
+            error_code="POLICY_DENIED_BY_USER",
+            metadata={"approval_id": approval_id},
+        )
+        self.messages.append({"role": "user", "content": denial})
+        return RunOutcome("completed", "已拒绝", 0)
+
+
+def _parse_tool_result(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}

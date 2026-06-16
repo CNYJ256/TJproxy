@@ -114,3 +114,69 @@ def test_parser_requires_workspace_and_accepts_config_path():
 
     assert str(args.workspace).endswith("repo")
     assert str(args.config) == "custom.toml"
+
+
+def test_parser_accepts_policy_path():
+    args = build_parser().parse_args(
+        ["--workspace", "D:/repo", "--policy", "agent.policy.toml"]
+    )
+
+    assert str(args.policy) == "agent.policy.toml"
+
+
+def test_plain_cli_approves_once_and_replays_pending_tool_call():
+    from tjproxy_agent.protocol import ToolCall
+
+    class ApprovalRunner(FakeRunner):
+        def __init__(self):
+            super().__init__()
+            self.pending_approval = (
+                "approval-1",
+                ToolCall(
+                    "powershell",
+                    {"pipeline": [{"command": "git", "args": ["reset", "--hard"]}]},
+                ),
+            )
+            self.approved = []
+
+        def approve_pending(self, approval_id):
+            self.approved.append(approval_id)
+            self.pending_approval = None
+            return RunOutcome("completed", "approved and ran", 1)
+
+        def run(self, task):
+            return RunOutcome("approval_required", "git reset --hard", 1)
+
+    stdout = StringIO()
+    code = interactive_loop(
+        ApprovalRunner(),
+        stdin=StringIO("danger\nyes\n/exit\n"),
+        stdout=stdout,
+    )
+
+    assert code == 0
+    assert "需要确认" in stdout.getvalue()
+    assert "approved and ran" in stdout.getvalue()
+
+
+def test_plain_cli_rejects_approval_when_user_does_not_type_yes():
+    class ApprovalRunner(FakeRunner):
+        def __init__(self):
+            super().__init__()
+            self.pending_approval = ("approval-1", object())
+
+        def reject_pending(self, approval_id):
+            self.pending_approval = None
+            return RunOutcome("completed", "已拒绝", 1)
+
+        def run(self, task):
+            return RunOutcome("approval_required", "git reset --hard", 1)
+
+    stdout = StringIO()
+    interactive_loop(
+        ApprovalRunner(),
+        stdin=StringIO("danger\nno\n/exit\n"),
+        stdout=stdout,
+    )
+
+    assert "已拒绝" in stdout.getvalue()

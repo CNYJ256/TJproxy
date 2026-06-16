@@ -103,3 +103,15 @@ def test_service_url_must_be_plain_local_http_origin(tmp_path: Path, base_url: s
 
     with pytest.raises(ConfigError, match="local HTTP origin"):
         load_config(path)
+
+
+def test_runtime_config_keeps_powershell_commands_for_compatibility(tmp_path: Path):
+    path = tmp_path / "agent.toml"
+    path.write_text(
+        "[[powershell.commands]]\nname = 'git'\nallowed_subcommands = ['status']\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.powershell.commands[0].name == "git"

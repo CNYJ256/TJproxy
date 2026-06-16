@@ -8,11 +8,11 @@ from typing import TextIO
 
 from .client import ServiceError, ServiceManager
 from .config import ConfigError, load_config
+from .policy import ApprovalStore, PolicyEngine, load_policy_config
 from .powershell import PowerShellExecutor
 from .prompt import load_system_prompt
 from .protocol import ToolCall
 from .runner import AgentRunner, ToolDispatcher
-from .tui_support import PlanModeToolDispatcher
 from .workspace import ToolFailure, Workspace
 
 
@@ -28,6 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=Path(__file__).resolve().parents[1] / "agent.toml",
+    )
+    parser.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        help="path to agent.policy.toml; defaults to a file beside --config or built-in policy",
     )
     return parser
 
@@ -67,6 +73,23 @@ def interactive_loop(
             continue
         except ServiceError as exc:
             print(f"current task failed: {exc}", file=stdout)
+            continue
+        if outcome.status == "approval_required":
+            approval = getattr(runner, "pending_approval", None)
+            if approval is None:
+                print(outcome.content, file=stdout)
+                continue
+            approval_id, _ = approval
+            print("[需要确认]", file=stdout)
+            print(outcome.content, file=stdout)
+            print('输入 "yes" 批准执行一次；其他输入拒绝：', file=stdout)
+            answer = stdin.readline().strip()
+            if answer == "yes":
+                approved = runner.approve_pending(approval_id)
+                print(approved.content, file=stdout)
+            else:
+                rejected = runner.reject_pending(approval_id)
+                print(rejected.content, file=stdout)
             continue
         print(outcome.content, file=stdout)
 
@@ -133,6 +156,10 @@ def main(argv: list[str] | None = None) -> int:
     manager: ServiceManager | None = None
     try:
         config = load_config(args.config)
+        policy_path = args.policy
+        if policy_path is None:
+            policy_path = args.config.resolve().parent / "agent.policy.toml"
+        policy_config = load_policy_config(policy_path)
         workspace = Workspace(
             args.workspace,
             read_limit=config.limits.read_bytes,
@@ -151,25 +178,31 @@ def main(argv: list[str] | None = None) -> int:
             request_timeout=config.service.request_timeout_seconds,
         )
         client = manager.ensure_running()
+        policy_engine = PolicyEngine(policy_config)
+        approval_store = ApprovalStore()
         tools = ToolDispatcher(
-            workspace, shell, output_chars=config.limits.output_chars
+            workspace,
+            shell,
+            output_chars=config.limits.output_chars,
+            policy_engine=policy_engine,
+            approval_store=approval_store,
         )
-        guarded_tools = PlanModeToolDispatcher(tools)
         system_prompt = load_system_prompt(
             args.config.resolve(), config.agent.prompt_path
         )
         runner = AgentRunner(
             client,
-            guarded_tools,
+            tools,
             max_rounds=config.agent.max_rounds,
             system_prompt=system_prompt,
+            policy_profile=policy_config.default_profile,
         )
         if not args.plain:
             from .tui import AgentTuiApp
 
             AgentTuiApp(
                 runner,
-                guarded_tools,
+                tools,
                 workspace=workspace.root,
             ).run()
             return 0

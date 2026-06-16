@@ -39,6 +39,66 @@ def test_tui_app_exposes_required_key_bindings():
     assert bindings["f9"] == "copy_output"
 
 
+class ApprovalRunner(FakeRunner):
+    def __init__(self):
+        super().__init__()
+        self.pending_approval = ("approval-1", object())
+        self.approved = []
+        self.rejected = []
+
+    def approve_pending(self, approval_id):
+        self.approved.append(approval_id)
+        self.pending_approval = None
+        return RunOutcome("completed", "approved", 1)
+
+    def reject_pending(self, approval_id):
+        self.rejected.append(approval_id)
+        self.pending_approval = None
+        return RunOutcome("completed", "rejected", 0)
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_approval_card_and_f5_approves_once():
+    runner = ApprovalRunner()
+    app = AgentTuiApp(runner, FakeGuardedTools(), workspace=Path("D:/repo"))
+
+    async with app.run_test() as pilot:
+        app._finish_outcome(
+            0,
+            RunOutcome("approval_required", '{"metadata":{"approval_id":"approval-1"},"stdout":"git reset --hard","stderr":"会丢弃改动"}', 1),
+        )
+        await pilot.pause(0.1)
+        assert app.query_one(".approval-card")
+        await pilot.press("f5")
+        await pilot.pause(0.1)
+
+    assert runner.approved == ["approval-1"]
+
+
+@pytest.mark.asyncio
+async def test_tui_esc_rejects_pending_approval():
+    runner = ApprovalRunner()
+    app = AgentTuiApp(runner, FakeGuardedTools(), workspace=Path("D:/repo"))
+
+    async with app.run_test() as pilot:
+        app._finish_outcome(
+            0,
+            RunOutcome("approval_required", '{"metadata":{"approval_id":"approval-1"},"stdout":"git reset --hard","stderr":"会丢弃改动"}', 1),
+        )
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+
+    assert runner.rejected == ["approval-1"]
+
+
+def test_tui_profile_name_maps_default_mode_to_dev_policy():
+    app = AgentTuiApp(FakeRunner(), FakeGuardedTools(), workspace=Path("D:/repo"))
+
+    assert app.policy_profile == "dev"
+    app.state.mode = "plan"
+    assert app.policy_profile == "plan"
+
+
 def test_tui_app_starts_in_default_mode_with_workspace_status():
     app = AgentTuiApp(FakeRunner(), FakeGuardedTools(), workspace=Path("D:/repo"))
 

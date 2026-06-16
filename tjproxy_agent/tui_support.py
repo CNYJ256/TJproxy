@@ -34,6 +34,7 @@ class CommandResult:
     message: str = ""
 
 
+# Compatibility wrapper for existing tests; policy profiles own plan mode now.
 class PlanModeToolDispatcher:
     def __init__(self, tools: Any, *, plan_mode: bool = False):
         self.tools = tools
