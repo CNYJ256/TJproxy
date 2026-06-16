@@ -362,6 +362,51 @@ def test_dispatcher_consumes_approval_and_executes_once(tmp_path: Path):
     assert len(shell.calls) == 1
 
 
+def test_dispatcher_approves_unknown_powershell_command_once(tmp_path: Path):
+    class FakePowerShell:
+        def __init__(self):
+            self.calls = []
+            self.approved = []
+
+        def approve_pipeline_once(self, pipeline):
+            self.approved.append(pipeline)
+
+        def run(self, pipeline):
+            self.calls.append(pipeline)
+            from tjproxy_agent.powershell import ShellResult
+
+            return ShellResult(0, "compiled", "")
+
+    workspace = Workspace(tmp_path, read_limit=1000, write_limit=1000)
+    shell = FakePowerShell()
+    policy = PolicyEngine(load_policy_config(tmp_path / "missing.toml"))
+    approvals = ApprovalStore()
+    dispatcher = ToolDispatcher(
+        workspace,
+        powershell=shell,
+        output_chars=1000,
+        policy_engine=policy,
+        approval_store=approvals,
+    )
+    context = PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
+    dispatcher.set_policy_context(context)
+    call = ToolCall(
+        "powershell",
+        {"pipeline": [{"command": "gcc", "args": ["grade_stats.c"]}]},
+    )
+    first = json.loads(dispatcher.execute(call))
+    approval_id = first["metadata"]["approval_id"]
+
+    dispatcher.approve_once(approval_id)
+    second = json.loads(dispatcher.execute(call))
+
+    assert first["error_code"] == "APPROVAL_REQUIRED"
+    assert second["ok"] is True
+    assert second["stdout"] == "compiled"
+    assert shell.approved == [call.arguments["pipeline"]]
+    assert shell.calls == [call.arguments["pipeline"]]
+
+
 # ── Task 5: per-task policy context in AgentRunner ─────────────────────────
 
 

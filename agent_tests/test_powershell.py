@@ -44,6 +44,33 @@ def test_allows_structured_text_pipeline(tmp_path: Path):
     assert result.timed_out is False
 
 
+def test_approved_unknown_command_can_run_once(tmp_path: Path):
+    workspace = Workspace(tmp_path, read_limit=1000, write_limit=1000)
+    executor = PowerShellExecutor(
+        workspace,
+        PowerShellConfig(
+            executable="pwsh",
+            timeout_seconds=5,
+            max_pipeline_stages=3,
+            commands=(CommandPolicy("Write-Output"),),
+        ),
+        command_chars=1000,
+        output_chars=2000,
+    )
+    pipeline = [{"command": "python", "args": ["-c", "print('approved')"]}]
+
+    with pytest.raises(ShellFailure, match="COMMAND_NOT_ALLOWED"):
+        executor.run(pipeline)
+
+    executor.approve_pipeline_once(pipeline)
+    result = executor.run(pipeline)
+
+    assert result.exit_code == 0
+    assert "approved" in result.stdout
+    with pytest.raises(ShellFailure, match="COMMAND_NOT_ALLOWED"):
+        executor.run(pipeline)
+
+
 @pytest.mark.parametrize(
     "stage",
     [

@@ -120,7 +120,7 @@ def test_policy_requires_approval_for_git_reset_and_npm_install(tmp_path: Path):
     assert install_decision.risk == Risk.DEPENDENCY_INSTALL
 
 
-def test_policy_denies_unknown_command_and_plan_mode_powershell(tmp_path: Path):
+def test_policy_requires_approval_for_unknown_command_and_denies_plan_mode_powershell(tmp_path: Path):
     engine = PolicyEngine(load_policy_config(tmp_path / "missing.toml"))
     dev = PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
     plan = PolicyContext(profile="plan", task_id="task-1", workspace=tmp_path)
@@ -128,7 +128,7 @@ def test_policy_denies_unknown_command_and_plan_mode_powershell(tmp_path: Path):
     unknown = engine.review(
         ToolCall(
             "powershell",
-            {"pipeline": [{"command": "Remove-Item", "args": ["x.txt"]}]},
+            {"pipeline": [{"command": "gcc", "args": ["grade_stats.c"]}]},
         ),
         dev,
     )
@@ -140,10 +140,34 @@ def test_policy_denies_unknown_command_and_plan_mode_powershell(tmp_path: Path):
         plan,
     )
 
-    assert unknown.kind == PolicyDecision.DENY
-    assert unknown.error_code == "POLICY_DENIED"
+    assert unknown.kind == PolicyDecision.APPROVAL_REQUIRED
+    assert "unknown command" in unknown.reason
+    assert unknown.summary == "gcc grade_stats.c"
     assert plan_shell.kind == PolicyDecision.DENY
     assert "profile" in plan_shell.reason
+
+
+def test_policy_denies_destructive_unknown_commands(tmp_path: Path):
+    engine = PolicyEngine(load_policy_config(tmp_path / "missing.toml"))
+    context = PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
+
+    for call in (
+        ToolCall(
+            "powershell",
+            {"pipeline": [{"command": "rm", "args": ["-rf", "src"]}]},
+        ),
+        ToolCall(
+            "powershell",
+            {
+                "pipeline": [
+                    {"command": "Remove-Item", "args": ["src", "-Recurse", "-Force"]}
+                ]
+            },
+        ),
+    ):
+        decision = engine.review(call, context)
+        assert decision.kind == PolicyDecision.DENY
+        assert decision.error_code == "POLICY_DENIED"
 
 
 def test_plan_mode_allows_only_docs_plan_writes(tmp_path: Path):
