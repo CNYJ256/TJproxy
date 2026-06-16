@@ -208,6 +208,7 @@ class AgentRunner:
         max_rounds: int,
         system_prompt: str,
         audit: AuditCallback | None = None,
+        policy_profile: str = "dev",
     ):
         self.client = client
         self.tools = tools
@@ -215,6 +216,8 @@ class AgentRunner:
         self.system_prompt = system_prompt
         self.audit = audit or (lambda event: None)
         self.messages = [{"role": "system", "content": system_prompt}]
+        self.policy_profile = policy_profile
+        self.pending_approval: tuple[str, ToolCall] | None = None
 
     def clear_history(self) -> None:
         self.messages = [{"role": "system", "content": self.system_prompt}]
@@ -222,6 +225,8 @@ class AgentRunner:
     def run(self, task: str) -> RunOutcome:
         history_length = len(self.messages)
         self.messages.append({"role": "user", "content": task})
+        task_id = uuid4().hex
+        self._set_tool_context(task_id)
         try:
             for round_number in range(1, self.max_rounds + 1):
                 raw = self.client.complete(self.messages)
@@ -237,14 +242,37 @@ class AgentRunner:
                     )
                     continue
                 if isinstance(response, FinalResponse):
+                    self._clear_tool_approvals()
                     return RunOutcome("completed", response.content, round_number)
                 self.audit(("tool_call", response))
                 result = self.tools.execute(response)
                 self.audit(("tool_result", result))
                 self.messages.append({"role": "user", "content": result})
+            self._clear_tool_approvals()
             return RunOutcome(
                 "round_limit", "maximum agent rounds reached", self.max_rounds
             )
         except BaseException:
+            self._clear_tool_approvals()
             del self.messages[history_length:]
             raise
+
+    def _set_tool_context(self, task_id: str) -> None:
+        if not hasattr(self.tools, "set_policy_context"):
+            return
+        from .policy import PolicyContext
+
+        workspace = getattr(getattr(self.tools, "workspace", None), "root", None)
+        if workspace is None:
+            return
+        self.tools.set_policy_context(
+            PolicyContext(
+                profile=self.policy_profile,
+                task_id=task_id,
+                workspace=workspace,
+            )
+        )
+
+    def _clear_tool_approvals(self) -> None:
+        if hasattr(self.tools, "clear_approvals"):
+            self.tools.clear_approvals()

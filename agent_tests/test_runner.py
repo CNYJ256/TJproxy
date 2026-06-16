@@ -289,3 +289,32 @@ def test_dispatcher_consumes_approval_and_executes_once(tmp_path: Path):
     assert second["stdout"] == "ran"
     assert third["error_code"] == "APPROVAL_REQUIRED"
     assert len(shell.calls) == 1
+
+
+# ── Task 5: per-task policy context in AgentRunner ─────────────────────────
+
+
+def test_runner_sets_and_clears_policy_context_per_task(tmp_path: Path):
+    class ContextTools(FakeTools):
+        def __init__(self, workspace):
+            super().__init__()
+            self.workspace = workspace
+            self.contexts = []
+            self.clears = 0
+
+        def set_policy_context(self, context):
+            self.contexts.append(context)
+
+        def clear_approvals(self):
+            self.clears += 1
+
+    client = FakeClient(['{"type":"final","content":"done"}'])
+    tools = ContextTools(Workspace(tmp_path, read_limit=1000, write_limit=1000))
+    runner = AgentRunner(client, tools, max_rounds=2, system_prompt="protocol")
+
+    runner.run("task")
+
+    assert len(tools.contexts) == 1
+    assert tools.contexts[0].task_id
+    assert tools.contexts[0].profile == "dev"
+    assert tools.clears == 1
