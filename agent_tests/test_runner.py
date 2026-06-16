@@ -213,3 +213,79 @@ def test_interrupted_model_request_rolls_back_current_task(failure):
         runner.run("failed task")
 
     assert runner.messages == history_before
+
+
+# ── Task 4: dispatcher policy gate ──────────────────────────────────────────
+
+from tjproxy_agent.policy import ApprovalStore, PolicyContext, PolicyEngine, load_policy_config
+
+
+def test_dispatcher_returns_approval_required_for_dangerous_command(tmp_path: Path):
+    workspace = Workspace(tmp_path, read_limit=1000, write_limit=1000)
+    policy = PolicyEngine(load_policy_config(tmp_path / "missing.toml"))
+    approvals = ApprovalStore()
+    dispatcher = ToolDispatcher(
+        workspace,
+        powershell=None,
+        output_chars=1000,
+        policy_engine=policy,
+        approval_store=approvals,
+    )
+    dispatcher.set_policy_context(
+        PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
+    )
+
+    result = json.loads(
+        dispatcher.execute(
+            ToolCall(
+                "powershell",
+                {"pipeline": [{"command": "git", "args": ["reset", "--hard"]}]},
+            )
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "APPROVAL_REQUIRED"
+    assert result["metadata"]["risk"] == "vcs_destructive"
+    assert result["metadata"]["approval_id"]
+
+
+def test_dispatcher_consumes_approval_and_executes_once(tmp_path: Path):
+    class FakePowerShell:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, pipeline):
+            self.calls.append(pipeline)
+            from tjproxy_agent.powershell import ShellResult
+
+            return ShellResult(0, "ran", "")
+
+    workspace = Workspace(tmp_path, read_limit=1000, write_limit=1000)
+    shell = FakePowerShell()
+    policy = PolicyEngine(load_policy_config(tmp_path / "missing.toml"))
+    approvals = ApprovalStore()
+    dispatcher = ToolDispatcher(
+        workspace,
+        powershell=shell,
+        output_chars=1000,
+        policy_engine=policy,
+        approval_store=approvals,
+    )
+    context = PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
+    dispatcher.set_policy_context(context)
+    call = ToolCall(
+        "powershell",
+        {"pipeline": [{"command": "git", "args": ["reset", "--hard"]}]},
+    )
+    first = json.loads(dispatcher.execute(call))
+    approval_id = first["metadata"]["approval_id"]
+
+    dispatcher.approve_once(approval_id)
+    second = json.loads(dispatcher.execute(call))
+    third = json.loads(dispatcher.execute(call))
+
+    assert second["ok"] is True
+    assert second["stdout"] == "ran"
+    assert third["error_code"] == "APPROVAL_REQUIRED"
+    assert len(shell.calls) == 1

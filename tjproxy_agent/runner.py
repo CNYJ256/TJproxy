@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from .powershell import ShellFailure
 from .protocol import (
@@ -30,12 +31,21 @@ class ToolDispatcher:
         powershell: Any,
         *,
         output_chars: int = 20_000,
+        policy_engine: Any | None = None,
+        approval_store: Any | None = None,
     ):
         self.workspace = workspace
         self.powershell = powershell
         self.output_chars = output_chars
+        self.policy_engine = policy_engine
+        self.approval_store = approval_store
+        self.policy_context = None
+        self._approved_once: set[str] = set()
 
     def execute(self, call: ToolCall) -> str:
+        policy_result = self._review_policy(call)
+        if policy_result is not None:
+            return policy_result
         try:
             if call.tool == "read":
                 content = self.workspace.read(call.arguments["path"])
@@ -125,6 +135,54 @@ class ToolDispatcher:
                 error_code=exc.code,
                 stderr=exc.message,
             )
+
+    def set_policy_context(self, context: Any) -> None:
+        self.policy_context = context
+
+    def approve_once(self, approval_id: str) -> None:
+        self._approved_once.add(approval_id)
+
+    def clear_approvals(self) -> None:
+        self._approved_once.clear()
+        if self.approval_store is not None and self.policy_context is not None:
+            self.approval_store.clear_task(self.policy_context.task_id)
+
+    def _review_policy(self, call: ToolCall) -> str | None:
+        if self.policy_engine is None or self.policy_context is None:
+            return None
+        if self.approval_store is None:
+            raise RuntimeError("approval_store is required when policy_engine is set")
+        from .policy import PolicyDecision
+
+        for approval_id in list(self._approved_once):
+            if self.approval_store.consume(approval_id, call, self.policy_context):
+                self._approved_once.remove(approval_id)
+                return None
+        review = self.policy_engine.review(call, self.policy_context)
+        if review.kind == PolicyDecision.ALLOW:
+            return None
+        if review.kind == PolicyDecision.DENY:
+            return tool_result_message(
+                call.tool,
+                ok=False,
+                stderr=review.reason,
+                error_code=review.error_code or "POLICY_DENIED",
+            )
+        approval = self.approval_store.create(review, call, self.policy_context)
+        return tool_result_message(
+            call.tool,
+            ok=False,
+            stdout=approval.summary,
+            stderr=approval.reason,
+            error_code="APPROVAL_REQUIRED",
+            metadata={
+                "approval_id": approval.approval_id,
+                "risk": approval.risk.value if approval.risk else None,
+                "summary": approval.summary,
+                "reason": approval.reason,
+                "details": approval.details,
+            },
+        )
 
     def _bounded(self, value: str) -> tuple[str, bool]:
         if len(value) <= self.output_chars:
