@@ -1,0 +1,85 @@
+[policy]
+default_profile = "dev"
+approval_lifetime = "once"
+
+[profiles.dev]
+allow_tools = [
+  "read",
+  "list_dir",
+  "read_range",
+  "search",
+  "project_map",
+  "context_pack",
+  "write",
+  "edit",
+  "powershell",
+]
+approval_required_risks = [
+  "filesystem_destructive",
+  "vcs_destructive",
+  "dependency_install",
+  "network",
+  "service_start",
+  "long_running",
+  "secret_touch",
+]
+
+[profiles.plan]
+allow_tools = [
+  "read",
+  "list_dir",
+  "read_range",
+  "search",
+  "project_map",
+  "context_pack",
+  "write",
+  "edit",
+]
+deny_tools = ["powershell"]
+write_allow_globs = ["docs/plan/*plan.md"]
+approval_required_risks = [
+  "filesystem_destructive",
+  "vcs_destructive",
+  "dependency_install",
+  "network",
+  "service_start",
+  "long_running",
+  "secret_touch",
+]
+
+[[commands]]
+name = "git"
+allow_subcommands = ["status", "diff", "log", "show", "rev-parse", "ls-files", "grep"]
+approve_subcommands = ["reset", "checkout", "clean", "rebase", "push", "remote", "tag", "branch"]
+
+[[commands]]
+name = "rg"
+deny_args = ["-L", "--follow"]
+
+[[commands]]
+name = "python"
+allow_subcommands = ["-m"]
+allow_modules = ["pytest", "unittest", "compileall"]
+approve_modules = ["pip"]
+
+[[commands]]
+name = "npm"
+allow_subcommands = ["test", "run"]
+approve_subcommands = ["install", "ci", "add", "update"]
+
+[[commands]]
+name = "node"
+
+[[commands]]
+name = "pwsh"
+allow_subcommands = ["-File"]
+
+[[commands]]
+name = "Select-String"
+
+[[commands]]
+name = "Write-Output"
+
+[project_discovery]
+enabled = true
+read_files = ["package.json", "pyproject.toml", "pytest.ini", "tox.ini"]

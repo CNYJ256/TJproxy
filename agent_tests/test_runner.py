@@ -97,6 +97,30 @@ def test_clear_history_keeps_only_system_prompt():
     assert runner.messages == [{"role": "system", "content": "protocol"}]
 
 
+def test_clear_history_clears_pending_approval_and_tool_store():
+    class ApprovalTools(FakeTools):
+        def __init__(self):
+            super().__init__()
+            self.clears = 0
+
+        def clear_approvals(self):
+            self.clears += 1
+
+    tools = ApprovalTools()
+    runner = AgentRunner(
+        FakeClient(['{"type":"final","content":"x"}']),
+        tools,
+        max_rounds=2,
+        system_prompt="protocol",
+    )
+    runner.pending_approval = ("approval-1", ToolCall("read", {"path": "a.txt"}))
+
+    runner.clear_history()
+
+    assert runner.pending_approval is None
+    assert tools.clears == 1
+
+
 def test_audit_callback_observes_call_before_result():
     client = FakeClient(
         [
@@ -210,6 +234,53 @@ def test_interrupted_model_request_rolls_back_current_task(failure):
     history_before = list(runner.messages)
 
     with pytest.raises(type(failure)):
+        runner.run("failed task")
+
+    assert runner.messages == history_before
+
+
+def test_model_failure_after_tool_result_returns_incomplete_and_keeps_context():
+    client = FakeClient(
+        [
+            '{"type":"tool_call","tool":"write","arguments":{"path":"todo.py","content":"print(1)"}}',
+            ServiceError("upstream timed out"),
+        ]
+    )
+    runner = AgentRunner(
+        client,
+        FakeTools(),
+        max_rounds=2,
+        system_prompt="protocol",
+    )
+
+    outcome = runner.run("create todo tool")
+
+    assert outcome.status == "incomplete"
+    assert outcome.rounds == 1
+    assert "模型回复中断" in outcome.content
+    assert "write todo.py" in outcome.content
+    assert "upstream timed out" in outcome.content
+    assert runner.messages[-1]["role"] == "user"
+    assert "tool_result" in runner.messages[-1]["content"]
+
+
+def test_model_failure_before_any_tool_result_still_rolls_back_current_task():
+    client = FakeClient(
+        [
+            '{"type":"final","content":"first"}',
+            ServiceError("offline before tool"),
+        ]
+    )
+    runner = AgentRunner(
+        client,
+        FakeTools(),
+        max_rounds=2,
+        system_prompt="protocol",
+    )
+    runner.run("completed task")
+    history_before = list(runner.messages)
+
+    with pytest.raises(ServiceError):
         runner.run("failed task")
 
     assert runner.messages == history_before

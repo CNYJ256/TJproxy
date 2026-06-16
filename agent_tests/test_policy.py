@@ -164,6 +164,8 @@ def test_plan_mode_allows_only_docs_plan_writes(tmp_path: Path):
 
 
 from tjproxy_agent.policy import ApprovalStore
+from tjproxy_agent.config import CommandPolicy
+from tjproxy_agent.policy import merge_legacy_powershell_commands
 
 
 def test_approval_store_consumes_exact_call_once(tmp_path: Path):
@@ -200,3 +202,72 @@ def test_approval_store_rejects_changed_arguments_or_task(tmp_path: Path):
 
     assert store.consume(approval.approval_id, changed_call, context) is False
     assert store.consume(approval.approval_id, call, changed_task) is False
+
+
+def test_legacy_powershell_commands_are_merged_into_policy(tmp_path: Path):
+    config = merge_legacy_powershell_commands(
+        load_policy_config(tmp_path / "missing.toml"),
+        (
+            CommandPolicy("node", script_runner=True),
+            CommandPolicy("Select-String"),
+            CommandPolicy("Write-Output"),
+            CommandPolicy("pwsh", allowed_subcommands=("-File",), script_runner=True),
+        ),
+    )
+    engine = PolicyEngine(config)
+    context = PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
+
+    for call in (
+        ToolCall("powershell", {"pipeline": [{"command": "node", "args": ["--check", "x.js"]}]}),
+        ToolCall("powershell", {"pipeline": [{"command": "Select-String", "args": ["-Pattern", "x"]}]}),
+        ToolCall("powershell", {"pipeline": [{"command": "Write-Output", "args": ["x"]}]}),
+        ToolCall("powershell", {"pipeline": [{"command": "pwsh", "args": ["-File", "ok.ps1"]}]}),
+    ):
+        assert engine.review(call, context).kind == PolicyDecision.ALLOW
+
+
+def test_project_discovery_marks_npm_dev_script_as_service_start(tmp_path: Path):
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"test":"vitest","dev":"vite --host 0.0.0.0","build":"vite build"}}',
+        encoding="utf-8",
+    )
+    engine = PolicyEngine(load_policy_config(tmp_path / "missing.toml"))
+    context = PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
+
+    decision = engine.review(
+        ToolCall(
+            "powershell",
+            {"pipeline": [{"command": "npm", "args": ["run", "dev"]}]},
+        ),
+        context,
+    )
+
+    assert decision.kind == PolicyDecision.APPROVAL_REQUIRED
+    assert decision.risk == Risk.SERVICE_START
+    assert "package.json" in decision.reason
+
+
+def test_project_discovery_allows_npm_run_build(tmp_path: Path):
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"build":"vite build"}}',
+        encoding="utf-8",
+    )
+    engine = PolicyEngine(load_policy_config(tmp_path / "missing.toml"))
+    context = PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
+
+    decision = engine.review(
+        ToolCall(
+            "powershell",
+            {"pipeline": [{"command": "npm", "args": ["run", "build"]}]},
+        ),
+        context,
+    )
+
+    assert decision.kind == PolicyDecision.ALLOW
+
+
+def test_checked_in_policy_file_loads():
+    config = load_policy_config(Path("agent.policy.toml"))
+
+    assert config.default_profile == "dev"
+    assert "git" in config.commands

@@ -252,20 +252,17 @@ agent> 阅读 README.md，告诉我项目提供了哪些接口，不要修改文
 
 Agent CLI 的主链路优先使用本地文件探索工具，而不是让模型上传源码文件。普通文本代码文件通过 `project_map`、`list_dir`、`search`、`read_range` 和 `context_pack` 注入上下文；二进制文件不会作为核心上下文处理。
 
-### PowerShell 工具
+### PowerShell 7 权限策略
 
-PowerShell 工具只接受结构化管道 stage，不执行模型直接生成的原始命令字符串。默认策略允许常见的只读开发和验证命令，并拒绝：
+Agent 只使用 PowerShell 7，不抽象 bash。命令通过结构化 pipeline 提交，先经过 `agent.policy.toml` 策略判定，再交给 PowerShellExecutor 编译执行。
 
-- 重定向和命令连接
-- 变量展开、子表达式和脚本块
-- 提权、后台任务和交互程序
-- 工作区外路径
-- 未加入白名单的命令、子命令和参数
-- Git `reset` 等修改型子命令
+默认 profile 是 `dev`：常见只读、搜索、测试和构建检查可以直接运行；破坏性文件操作、VCS 重写、依赖安装、网络下载、服务启动、敏感文件访问会触发一次性审批。
 
-现有工作区脚本可以通过配置允许的解释器复用。
+`/plan` 切换到 plan profile：模型仍可探索项目，但写入只允许 `docs/plan/*plan.md`，并禁止 PowerShell。
 
-> 这些限制属于应用级策略，不是操作系统级沙箱。测试工具、构建工具、包脚本和工作区脚本本身仍然可以执行代码。只应对可信工作区和可信脚本使用 Agent CLI。
+如果未提供 `agent.policy.toml`，Agent 使用内置默认策略；旧 `agent.toml` 中的 `[powershell.commands]` 会继续作为兼容命令合并到策略层。
+
+这些限制属于应用级策略，不是操作系统级沙箱。测试工具、构建工具、包脚本和工作区脚本本身仍然可以执行代码。只应对可信工作区和可信脚本使用 Agent CLI。
 
 ## 配置
 
@@ -318,6 +315,7 @@ TJproxy/
 |- tjproxy_agent/   Agent 协议、工具、沙箱策略和运行循环
 |- agent_cli.py     交互式 Agent 入口
 |- agent.toml       Agent 默认配置
+|- agent.policy.toml Agent 权限策略示例
 |- agent_tests/     Agent 单元与端到端测试
 `- README.md
 ```

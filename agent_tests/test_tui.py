@@ -37,6 +37,10 @@ def test_tui_app_exposes_required_key_bindings():
     assert bindings["ctrl+v"] == "paste_to_input"
     assert bindings["f4"] == "paste_to_input"
     assert bindings["f9"] == "copy_output"
+    assert bindings["f5"] == "approve_pending"
+    assert bindings["y"] == "approve_pending"
+    assert bindings["escape"] == "reject_pending"
+    assert bindings["n"] == "reject_pending"
 
 
 class ApprovalRunner(FakeRunner):
@@ -65,14 +69,44 @@ async def test_tui_shows_approval_card_and_f5_approves_once():
     async with app.run_test() as pilot:
         app._finish_outcome(
             0,
-            RunOutcome("approval_required", '{"metadata":{"approval_id":"approval-1"},"stdout":"git reset --hard","stderr":"会丢弃改动"}', 1),
+            RunOutcome("approval_required", '{"metadata":{"approval_id":"approval-1","risk":"vcs_destructive"},"stdout":"git reset --hard","stderr":"会丢弃改动"}', 1),
         )
         await pilot.pause(0.1)
-        assert app.query_one(".approval-card")
+        card = app.query_one(".approval-card")
+        assert "vcs_destructive" in card.plain_text
+        assert "当前 workspace" in card.plain_text
         await pilot.press("f5")
         await pilot.pause(0.1)
 
     assert runner.approved == ["approval-1"]
+
+
+@pytest.mark.asyncio
+async def test_tui_y_approves_and_n_rejects_pending_approval():
+    approve_runner = ApprovalRunner()
+    approve_app = AgentTuiApp(approve_runner, FakeGuardedTools(), workspace=Path("D:/repo"))
+
+    async with approve_app.run_test() as pilot:
+        approve_app._finish_outcome(
+            0,
+            RunOutcome("approval_required", '{"metadata":{"approval_id":"approval-1"},"stdout":"git reset --hard","stderr":"会丢弃改动"}', 1),
+        )
+        await pilot.press("y")
+        await pilot.pause(0.1)
+
+    reject_runner = ApprovalRunner()
+    reject_app = AgentTuiApp(reject_runner, FakeGuardedTools(), workspace=Path("D:/repo"))
+
+    async with reject_app.run_test() as pilot:
+        reject_app._finish_outcome(
+            0,
+            RunOutcome("approval_required", '{"metadata":{"approval_id":"approval-1"},"stdout":"git reset --hard","stderr":"会丢弃改动"}', 1),
+        )
+        await pilot.press("n")
+        await pilot.pause(0.1)
+
+    assert approve_runner.approved == ["approval-1"]
+    assert reject_runner.rejected == ["approval-1"]
 
 
 @pytest.mark.asyncio
