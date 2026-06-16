@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 import tomllib
+from uuid import uuid4
 
 from .protocol import ToolCall
 
@@ -445,3 +446,54 @@ def _call_hash(call: ToolCall, context: PolicyContext) -> str:
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
+class ApprovalRequest:
+    approval_id: str
+    call_hash: str
+    task_id: str
+    summary: str
+    reason: str
+    risk: Risk | None
+    details: dict[str, Any]
+
+
+class ApprovalStore:
+    def __init__(self):
+        self._requests: dict[str, ApprovalRequest] = {}
+
+    def create(
+        self, review: ReviewResult, call: ToolCall, context: PolicyContext
+    ) -> ApprovalRequest:
+        approval = ApprovalRequest(
+            approval_id=uuid4().hex,
+            call_hash=_call_hash(call, context),
+            task_id=context.task_id,
+            summary=review.summary,
+            reason=review.reason,
+            risk=review.risk,
+            details=review.details,
+        )
+        self._requests[approval.approval_id] = approval
+        return approval
+
+    def consume(
+        self, approval_id: str, call: ToolCall, context: PolicyContext
+    ) -> bool:
+        approval = self._requests.get(approval_id)
+        if approval is None:
+            return False
+        expected = _call_hash(call, context)
+        if approval.call_hash != expected or approval.task_id != context.task_id:
+            return False
+        del self._requests[approval_id]
+        return True
+
+    def clear_task(self, task_id: str) -> None:
+        for approval_id, approval in list(self._requests.items()):
+            if approval.task_id == task_id:
+                del self._requests[approval_id]
+
+    def clear_all(self) -> None:
+        self._requests.clear()

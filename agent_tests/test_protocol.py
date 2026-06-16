@@ -145,4 +145,23 @@ def test_protocol_error_and_tool_result_have_stable_envelopes():
         "stderr": "failed",
         "error_code": "COMMAND_FAILED",
         "truncated": True,
+        "metadata": {},
     }
+
+
+def test_tool_result_can_include_metadata_for_approval_requests():
+    result = json.loads(
+        tool_result_message(
+            "powershell",
+            ok=False,
+            error_code="APPROVAL_REQUIRED",
+            metadata={
+                "approval_id": "approval-1",
+                "risk": "vcs_destructive",
+                "summary": "git reset --hard",
+            },
+        )
+    )
+
+    assert result["metadata"]["approval_id"] == "approval-1"
+    assert result["metadata"]["risk"] == "vcs_destructive"

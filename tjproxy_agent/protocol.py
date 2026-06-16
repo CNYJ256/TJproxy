@@ -188,6 +188,7 @@ def tool_result_message(
     exit_code: int | None = None,
     error_code: str | None = None,
     truncated: bool = False,
+    metadata: dict[str, Any] | None = None,
 ) -> str:
     return json.dumps(
         {
@@ -199,6 +200,7 @@ def tool_result_message(
             "stderr": stderr,
             "error_code": error_code,
             "truncated": truncated,
+            "metadata": metadata or {},
         },
         ensure_ascii=False,
     )

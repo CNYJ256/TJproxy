@@ -161,3 +161,42 @@ def test_plan_mode_allows_only_docs_plan_writes(tmp_path: Path):
 
     assert allowed.kind == PolicyDecision.ALLOW
     assert blocked.kind == PolicyDecision.DENY
+
+
+from tjproxy_agent.policy import ApprovalStore
+
+
+def test_approval_store_consumes_exact_call_once(tmp_path: Path):
+    context = PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
+    call = ToolCall(
+        "powershell",
+        {"pipeline": [{"command": "git", "args": ["reset", "--hard"]}]},
+    )
+    engine = PolicyEngine(load_policy_config(tmp_path / "missing.toml"))
+    review = engine.review(call, context)
+    store = ApprovalStore()
+
+    approval = store.create(review, call, context)
+
+    assert store.consume(approval.approval_id, call, context) is True
+    assert store.consume(approval.approval_id, call, context) is False
+
+
+def test_approval_store_rejects_changed_arguments_or_task(tmp_path: Path):
+    context = PolicyContext(profile="dev", task_id="task-1", workspace=tmp_path)
+    changed_task = PolicyContext(profile="dev", task_id="task-2", workspace=tmp_path)
+    call = ToolCall(
+        "powershell",
+        {"pipeline": [{"command": "git", "args": ["reset", "--hard"]}]},
+    )
+    changed_call = ToolCall(
+        "powershell",
+        {"pipeline": [{"command": "git", "args": ["reset", "--soft"]}]},
+    )
+    engine = PolicyEngine(load_policy_config(tmp_path / "missing.toml"))
+    review = engine.review(call, context)
+    store = ApprovalStore()
+    approval = store.create(review, call, context)
+
+    assert store.consume(approval.approval_id, changed_call, context) is False
+    assert store.consume(approval.approval_id, call, changed_task) is False
