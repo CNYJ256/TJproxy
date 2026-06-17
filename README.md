@@ -58,6 +58,12 @@ TJproxy 本地服务 :8765
 
 ## 安装
 
+### Release 压缩包
+
+Release 中的 `TJproxy-v0.2.0-windows.zip` 已包含浏览器扩展、TJproxy 服务、Agent TUI、配置文件和 Windows 启动脚本。下载后解压到任意目录，先运行 `doctor.bat` 检查本机环境，再运行 `start.bat` 启动 TUI；首次启动会自动创建 `.venv` 并安装 `server/requirements.txt` 中的 Python 依赖。
+
+Chrome 扩展可以直接加载完整包内的 `TJproxy-Bridge-v0.2.0.zip`，也可以加载解压目录中的 `extension` 文件夹。
+
 ### 1. 安装 Python 依赖
 
 ```powershell
