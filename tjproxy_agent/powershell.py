@@ -188,7 +188,9 @@ class PowerShellExecutor:
         ):
             raise ShellFailure("WORKSPACE_ESCAPE", value)
 
-    def run(self, pipeline: list[dict[str, Any]]) -> ShellResult:
+    def run(
+        self, pipeline: list[dict[str, Any]], *, stdin: str | None = None
+    ) -> ShellResult:
         try:
             script = self._compile(pipeline)
         finally:
@@ -207,7 +209,7 @@ class PowerShellExecutor:
             process = subprocess.Popen(
                 command,
                 cwd=self.workspace.root,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -222,7 +224,8 @@ class PowerShellExecutor:
         timed_out = False
         try:
             stdout, stderr = process.communicate(
-                timeout=self.config.timeout_seconds
+                stdin,
+                timeout=self.config.timeout_seconds,
             )
         except subprocess.TimeoutExpired:
             timed_out = True

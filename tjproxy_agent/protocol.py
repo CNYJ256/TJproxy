@@ -43,7 +43,7 @@ ARGUMENT_KEYS = {
         {"path", "old_text", "new_text"},
         {"path", "old_text", "new_text", "expected_replacements"},
     ),
-    "powershell": ({"pipeline"}, {"pipeline"}),
+    "powershell": ({"pipeline"}, {"pipeline", "stdin"}),
 }
 
 
@@ -153,6 +153,10 @@ def _validate_arguments(tool: str, arguments: dict[str, Any]) -> None:
     if not isinstance(pipeline, list) or not pipeline:
         raise ProtocolError(
             "powershell.arguments.pipeline must be a non-empty array"
+        )
+    if "stdin" in arguments:
+        _require_string(
+            arguments["stdin"], "powershell.arguments.stdin", allow_empty=True
         )
     for index, stage in enumerate(pipeline):
         if not isinstance(stage, dict) or set(stage) != {"command", "args"}:

@@ -16,6 +16,7 @@ Valid response forms:
 {"type":"tool_call","tool":"write","arguments":{"path":"relative/path","content":"complete file content"}}
 {"type":"tool_call","tool":"edit","arguments":{"path":"relative/path","old_text":"exact old text","new_text":"exact new text","expected_replacements":1}}
 {"type":"tool_call","tool":"powershell","arguments":{"pipeline":[{"command":"git","args":["status","--short"]}]}}
+{"type":"tool_call","tool":"powershell","arguments":{"pipeline":[{"command":"main.exe","args":[]}],"stdin":"3\n80 90 100\n"}}
 {"type":"final","content":"final answer to the user"}
 
 Hard protocol rules:
@@ -24,7 +25,7 @@ Hard protocol rules:
 - Use one tool per response.
 - Use only the exact tool names and argument keys shown above.
 - Paths must be relative to the workspace. Never use absolute paths, "..", drive letters, URLs, shell globs as paths, or path traversal.
-- PowerShell uses structured pipeline stages only. Never emit raw shell syntax, chained shell commands, redirection, pipes inside args, or inline scripts unless the configured command explicitly supports them.
+- PowerShell uses structured pipeline stages only. Use powershell.arguments.stdin to pass stdin text to the command. Never emit raw shell syntax, chained shell commands, redirection, pipes inside args, or inline scripts unless the configured command explicitly supports them.
 - A protocol_error means no tool ran. Correct the JSON format in the next response.
 - A tool_result with ok=false means the action failed. Do not claim success. Read stderr/error_code and choose a safer next step.
 - If tool output is truncated, narrow the query or use read_range/context_pack before making conclusions.
@@ -32,7 +33,7 @@ Hard protocol rules:
 - Never output more than one JSON object.
 - After a tool_call, stop immediately and wait for the harness tool_result.
 - Do not predict or fabricate whether a write, edit, shell command, test, or build succeeded.
-- Every powershell pipeline stage must contain exactly {"command": string, "args": string[]}; use "args":[] when there are no arguments.
+- Every powershell pipeline stage must contain exactly {"command": string, "args": string[]}; use "args":[] when there are no arguments. The optional powershell.arguments.stdin value must be a string.
 
 Operating procedure:
 1. For an unfamiliar codebase, start with project_map or list_dir before reading individual files.

@@ -107,6 +107,23 @@ def test_workspace_script_path_is_checked_and_executed(tmp_path: Path):
     assert result.stdout.strip() == "ok"
 
 
+def test_run_passes_explicit_stdin_to_process(tmp_path: Path):
+    script = tmp_path / "echo_stdin.ps1"
+    script.write_text(
+        "$inputText = [Console]::In.ReadToEnd(); Write-Output \"stdin=$inputText\"",
+        encoding="utf-8",
+    )
+
+    result = make_executor(tmp_path).run(
+        [{"command": "pwsh", "args": ["-File", "echo_stdin.ps1"]}],
+        stdin="3\n80 90 100\n",
+    )
+
+    assert result.exit_code == 0
+    assert "stdin=3" in result.stdout
+    assert "80 90 100" in result.stdout
+
+
 def test_timeout_is_reported_and_process_tree_is_stopped(tmp_path: Path):
     script = tmp_path / "slow.ps1"
     script.write_text("Start-Sleep -Seconds 5", encoding="utf-8")

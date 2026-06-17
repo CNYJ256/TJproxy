@@ -119,7 +119,13 @@ class ToolDispatcher:
                     stderr="tool is unavailable",
                     error_code="TOOL_UNAVAILABLE",
                 )
-            result = self.powershell.run(call.arguments["pipeline"])
+            if "stdin" in call.arguments:
+                result = self.powershell.run(
+                    call.arguments["pipeline"],
+                    stdin=call.arguments["stdin"],
+                )
+            else:
+                result = self.powershell.run(call.arguments["pipeline"])
             return tool_result_message(
                 "powershell",
                 ok=result.exit_code == 0 and not result.timed_out,

@@ -204,9 +204,46 @@ def test_dispatcher_returns_file_failure_as_tool_result(tmp_path: Path):
     assert result["error_code"] == "NOT_FOUND"
 
 
+def test_dispatcher_passes_powershell_stdin_when_provided(tmp_path: Path):
+    class FakePowerShell:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, pipeline, *, stdin=None):
+            self.calls.append((pipeline, stdin))
+            from tjproxy_agent.powershell import ShellResult
+
+            return ShellResult(0, f"stdin={stdin}", "")
+
+    shell = FakePowerShell()
+    dispatcher = ToolDispatcher(
+        Workspace(tmp_path, read_limit=100, write_limit=100),
+        powershell=shell,
+        output_chars=100,
+    )
+
+    result = json.loads(
+        dispatcher.execute(
+            ToolCall(
+                "powershell",
+                {
+                    "pipeline": [{"command": "main.exe", "args": []}],
+                    "stdin": "3\n80 90 100\n",
+                },
+            )
+        )
+    )
+
+    assert shell.calls == [
+        ([{"command": "main.exe", "args": []}], "3\n80 90 100\n")
+    ]
+    assert result["stdout"] == "stdin=3\n80 90 100\n"
+
+
 def test_default_prompt_requires_one_json_tool_call():
     assert "exactly one JSON object" in SYSTEM_PROMPT
     assert "one tool per response" in SYSTEM_PROMPT
+    assert '"stdin"' in SYSTEM_PROMPT
     assert '"type":"final"' in SYSTEM_PROMPT
 
 

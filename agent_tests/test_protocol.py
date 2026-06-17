@@ -60,6 +60,22 @@ def test_powershell_requires_structured_pipeline():
     assert parsed.arguments["pipeline"][0]["command"] == "git"
 
 
+def test_powershell_accepts_optional_stdin():
+    parsed = parse_response(
+        '{"type":"tool_call","tool":"powershell","arguments":{'
+        '"pipeline":[{"command":"main.exe","args":[]}],'
+        '"stdin":"3\\n80 90 100\\n"}}'
+    )
+
+    assert parsed == ToolCall(
+        tool="powershell",
+        arguments={
+            "pipeline": [{"command": "main.exe", "args": []}],
+            "stdin": "3\n80 90 100\n",
+        },
+    )
+
+
 @pytest.mark.parametrize(
     ("tool", "arguments"),
     [
@@ -111,6 +127,7 @@ def test_rejects_invalid_local_exploration_arguments(tool, arguments, message):
         {"pipeline": [{"command": "git"}]},
         {"pipeline": [{"command": "git", "args": "status"}]},
         {"pipeline": [{"command": "", "args": []}]},
+        {"pipeline": [{"command": "git", "args": []}], "stdin": 123},
     ],
 )
 def test_rejects_invalid_powershell_pipeline(arguments):
