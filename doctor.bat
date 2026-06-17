@@ -93,6 +93,7 @@ exit /b 1
 
 :doctor_success
 echo [TJproxy Doctor] Environment checks completed.
+Pause
 exit /b 0
 
 :find_python
@@ -135,3 +136,5 @@ exit /b 0
 set /a ERRORS+=1
 echo [FAIL] %~1
 exit /b 0
+
+Pause
