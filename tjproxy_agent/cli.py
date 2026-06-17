@@ -40,6 +40,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="path to agent.policy.toml; defaults to a file beside --config or built-in policy",
     )
+    parser.add_argument(
+        "--debug-port",
+        type=int,
+        default=None,
+        help="run a local HTTP debug endpoint instead of the interactive UI",
+    )
+    parser.add_argument(
+        "--debug-host",
+        default="127.0.0.1",
+        choices=("127.0.0.1", "localhost"),
+        help="host for --debug-port; defaults to 127.0.0.1",
+    )
     return parser
 
 
@@ -205,6 +217,23 @@ def main(argv: list[str] | None = None) -> int:
             system_prompt=system_prompt,
             policy_profile=policy_config.default_profile,
         )
+        if args.debug_port is not None:
+            from .debug_server import DebugAgentServer
+
+            server = DebugAgentServer(
+                runner,
+                host=args.debug_host,
+                port=args.debug_port,
+            )
+            print(
+                f"debug server listening on http://{args.debug_host}:{server.server_port}",
+                flush=True,
+            )
+            try:
+                server.serve_forever()
+            finally:
+                server.server_close()
+            return 0
         if not args.plain:
             from .tui import AgentTuiApp
 

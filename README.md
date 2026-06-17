@@ -186,6 +186,34 @@ python agent_cli.py --workspace D:\repos\example
 python agent_cli.py --workspace D:\repos\example --plain
 ```
 
+如果需要对真实 AgentRunner/TJproxyClient/LLM 调用链做自动化调试，可以启动仅监听本机的调试 HTTP 入口：
+
+```powershell
+python agent_cli.py --workspace D:\repos\example --debug-port 9876
+```
+
+调试入口复用普通 CLI/TUI 的同一套模型请求、工具协议、权限策略和一次性审批链路。它不会模拟模型；`POST /run` 会实际调用 `POST /v1/chat/completions`，并返回 LLM 请求、原始响应、工具调用和工具结果 trace。
+
+常用端点：
+
+| 端点 | 用途 |
+|---|---|
+| `GET /health` | 检查调试入口是否启动 |
+| `POST /run` | 运行一个任务，body 为 `{"task":"..."}` |
+| `POST /approve` | 继续一次待审批工具调用，body 为 `{"approval_id":"..."}` |
+| `POST /reset` | 清空当前 Agent 会话上下文 |
+
+最小请求示例：
+
+```powershell
+$body = @{ task = "阅读 README.md，概括项目能力，不要修改文件。" } | ConvertTo-Json -Compress
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:9876/run" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
 TUI 快捷键：
 
 ```text
@@ -234,6 +262,23 @@ agent> 阅读 README.md，告诉我项目提供了哪些接口，不要修改文
 ```
 
 模型输出不满足协议时不会执行任何内容，而是将协议错误回传模型重新生成。
+
+## Demo 任务验证
+
+`docs/demos` 保存了一组通过调试 HTTP 入口真实调用现有 AgentRunner/TJproxyClient/LLM 链路生成的 demo。目录中仅保留源码、测试、项目配置、trace 和 `analysis.md`；编译产物、缓存和虚拟环境产物不纳入保留范围。
+
+| Demo | 内容 | 验证命令 | 结果 |
+|---|---|---|---|
+| `01-python-todo` | Python JSON 待办 CLI，支持 add/list/done/delete | `python -m pytest` | 8 passed |
+| `02-c-grade-stats` | C 学生成绩平均值、最大值、最小值统计 | `gcc main.c -std=c11 -Wall -Wextra -o main.exe` + stdin 样例 | 编译通过，样例通过 |
+| `03-cpp-bracket-checker` | C++17 `()[]{}` 括号匹配检查器 | `g++ main.cpp -std=c++17 -Wall -Wextra -o bracket.exe` + stdin 样例 | 编译通过，样例通过 |
+| `04-rust-calculator` | Rust add/sub/mul/div 计算器，除零返回 `None` | `cargo test` | 5 passed |
+| `05-js-markdown-headings` | Node.js Markdown 标题提取器 | `npm test` | 8 passed |
+| `06-python-textstats` | Python `textstats` 多文件包 | `python -m pytest` | 17 passed |
+| `07-bugfix-palindrome` | 复现并修复 `reversed(s)` 迭代器 bug | `python -m pytest` | 6 passed |
+| `08-dispatch-refactor` | 将 calculator if/elif 分发重构为 dispatch 字典 | `python -m pytest` | 6 passed |
+
+详细分析见 `docs/demos/analysis.md`，完整真实调用 trace 位于 `docs/demos/_api-traces/`。
 
 ## Agent 工具与安全边界
 

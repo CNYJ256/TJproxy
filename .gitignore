@@ -1,6 +1,7 @@
 .playwright-mcp
 docs/superpowers/
 node_modules/
+.venv/
 .vite/
 __pycache__/
 *.py[cod]

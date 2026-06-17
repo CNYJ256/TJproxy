@@ -124,6 +124,15 @@ def test_parser_accepts_policy_path():
     assert str(args.policy) == "agent.policy.toml"
 
 
+def test_parser_accepts_debug_port():
+    args = build_parser().parse_args(
+        ["--workspace", "D:/repo", "--debug-port", "9876"]
+    )
+
+    assert args.debug_port == 9876
+    assert args.debug_host == "127.0.0.1"
+
+
 def test_plain_cli_approves_once_and_replays_pending_tool_call():
     from tjproxy_agent.protocol import ToolCall
 

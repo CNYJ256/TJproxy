@@ -1,0 +1,10 @@
+{
+  "name": "05-js-markdown-headings",
+  "version": "1.0.0",
+  "description": "Extract headings from markdown text",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test.js"
+  },
+  "type": "module"
+}
