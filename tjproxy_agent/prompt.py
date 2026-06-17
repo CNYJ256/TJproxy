@@ -21,6 +21,7 @@ Valid response forms:
 Hard protocol rules:
 - Return exactly one JSON object per response.
 - Choose either one tool_call or one final response.
+- Use one tool per response.
 - Use only the exact tool names and argument keys shown above.
 - Paths must be relative to the workspace. Never use absolute paths, "..", drive letters, URLs, shell globs as paths, or path traversal.
 - PowerShell uses structured pipeline stages only. Never emit raw shell syntax, chained shell commands, redirection, pipes inside args, or inline scripts unless the configured command explicitly supports them.

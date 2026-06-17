@@ -407,6 +407,63 @@ def test_dispatcher_approves_unknown_powershell_command_once(tmp_path: Path):
     assert shell.calls == [call.arguments["pipeline"]]
 
 
+def test_runner_continues_after_approved_tool_result():
+    class ApprovalTools(FakeTools):
+        def __init__(self):
+            super().__init__()
+            self.approved = []
+
+        def approve_once(self, approval_id):
+            self.approved.append(approval_id)
+
+        def execute(self, call):
+            self.calls.append(call)
+            if not self.approved:
+                return json.dumps(
+                    {
+                        "type": "tool_result",
+                        "tool": call.tool,
+                        "ok": False,
+                        "stdout": "gcc grade_stats.c",
+                        "stderr": "needs approval",
+                        "exit_code": None,
+                        "error_code": "APPROVAL_REQUIRED",
+                        "truncated": False,
+                        "metadata": {"approval_id": "approval-1"},
+                    }
+                )
+            return json.dumps(
+                {
+                    "type": "tool_result",
+                    "tool": call.tool,
+                    "ok": True,
+                    "stdout": "compiled",
+                    "stderr": "",
+                    "exit_code": 0,
+                    "error_code": None,
+                    "truncated": False,
+                }
+            )
+
+    client = FakeClient(
+        [
+            '{"type":"tool_call","tool":"powershell","arguments":{"pipeline":[{"command":"gcc","args":["grade_stats.c"]}]}}',
+            '{"type":"final","content":"compiled successfully"}',
+        ]
+    )
+    tools = ApprovalTools()
+    runner = AgentRunner(client, tools, max_rounds=4, system_prompt="protocol")
+
+    first = runner.run("compile")
+    outcome = runner.approve_pending("approval-1")
+
+    assert first.status == "approval_required"
+    assert outcome == RunOutcome("completed", "compiled successfully", 1)
+    assert len(tools.calls) == 2
+    assert len(client.calls) == 2
+    assert "compiled" in client.calls[1][-1]["content"]
+
+
 # ── Task 5: per-task policy context in AgentRunner ─────────────────────────
 
 

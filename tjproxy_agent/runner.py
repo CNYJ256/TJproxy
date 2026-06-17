@@ -234,9 +234,16 @@ class AgentRunner:
         self.messages.append({"role": "user", "content": task})
         task_id = uuid4().hex
         self._set_tool_context(task_id)
-        last_tool_call: ToolCall | None = None
-        last_tool_result: str | None = None
-        last_tool_round = 0
+        return self._continue_run(history_length)
+
+    def _continue_run(
+        self,
+        history_length: int,
+        *,
+        last_tool_call: ToolCall | None = None,
+        last_tool_result: str | None = None,
+        last_tool_round: int = 0,
+    ) -> RunOutcome:
         try:
             for round_number in range(1, self.max_rounds + 1):
                 raw = self.client.complete(self.messages)
@@ -316,7 +323,12 @@ class AgentRunner:
         result = self.tools.execute(call)
         self.audit(("tool_result", result))
         self.messages.append({"role": "user", "content": result})
-        return RunOutcome("completed", result, 1)
+        return self._continue_run(
+            len(self.messages),
+            last_tool_call=call,
+            last_tool_result=result,
+            last_tool_round=1,
+        )
 
     def reject_pending(self, approval_id: str) -> RunOutcome:
         if self.pending_approval is not None and self.pending_approval[0] == approval_id:
