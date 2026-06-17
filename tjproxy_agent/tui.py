@@ -363,25 +363,52 @@ class AgentTuiApp(App[None]):
         self._transcript.append(text.plain)
 
     def action_approve_pending(self) -> None:
-        if self._pending_approval_id is None:
+        approval_id = self._take_pending_approval()
+        if approval_id is None:
             self._write_log("[yellow]当前没有待批准操作。[/yellow]", plain="当前没有待批准操作。")
             return
-        outcome = self.runner.approve_pending(self._pending_approval_id)
-        self._pending_approval_id = None
-        if self._approval_card is not None:
-            self._approval_card.remove()
-            self._approval_card = None
-        self._finish_outcome(self._visible_run_id, outcome)
+        self._start_approval_resolution(approval_id, approve=True)
 
     def action_reject_pending(self) -> None:
-        if self._pending_approval_id is None:
+        approval_id = self._take_pending_approval()
+        if approval_id is None:
             return
-        outcome = self.runner.reject_pending(self._pending_approval_id)
+        self._start_approval_resolution(approval_id, approve=False)
+
+    def _take_pending_approval(self) -> str | None:
+        approval_id = self._pending_approval_id
         self._pending_approval_id = None
         if self._approval_card is not None:
             self._approval_card.remove()
             self._approval_card = None
-        self._finish_outcome(self._visible_run_id, outcome)
+        self._approval_details_visible = False
+        return approval_id
+
+    def _start_approval_resolution(self, approval_id: str, *, approve: bool) -> None:
+        run_id = self._visible_run_id
+        self.state.running = True
+        self._refresh_status()
+        self.current_worker = self.run_worker(
+            lambda: self._run_approval_resolution(run_id, approval_id, approve),
+            thread=True,
+            exclusive=True,
+            exit_on_error=False,
+        )
+
+    def _run_approval_resolution(
+        self, run_id: int, approval_id: str, approve: bool
+    ) -> None:
+        try:
+            if approve:
+                outcome = self.runner.approve_pending(approval_id)
+            else:
+                outcome = self.runner.reject_pending(approval_id)
+        except KeyboardInterrupt:
+            self.call_from_thread(self._finish_interrupted, run_id)
+        except BaseException as exc:
+            self.call_from_thread(self._finish_error, run_id, f"approval failed: {exc}")
+        else:
+            self.call_from_thread(self._finish_outcome, run_id, outcome)
 
     def action_toggle_approval_details(self) -> None:
         if self._approval_card is None:

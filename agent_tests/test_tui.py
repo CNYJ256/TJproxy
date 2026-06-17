@@ -61,6 +61,13 @@ class ApprovalRunner(FakeRunner):
         return RunOutcome("completed", "rejected", 0)
 
 
+class AuditingApprovalRunner(ApprovalRunner):
+    def approve_pending(self, approval_id):
+        result = super().approve_pending(approval_id)
+        self.audit(("tool_result", tool_result_message("powershell", ok=True)))
+        return result
+
+
 @pytest.mark.asyncio
 async def test_tui_shows_approval_card_and_f5_approves_once():
     runner = ApprovalRunner()
@@ -77,6 +84,22 @@ async def test_tui_shows_approval_card_and_f5_approves_once():
         assert "当前 workspace" in card.plain_text
         await pilot.press("f5")
         await pilot.pause(0.1)
+
+    assert runner.approved == ["approval-1"]
+
+
+@pytest.mark.asyncio
+async def test_tui_approves_pending_operation_from_worker_thread():
+    runner = AuditingApprovalRunner()
+    app = AgentTuiApp(runner, FakeGuardedTools(), workspace=Path("D:/repo"))
+
+    async with app.run_test() as pilot:
+        app._finish_outcome(
+            0,
+            RunOutcome("approval_required", '{"metadata":{"approval_id":"approval-1"},"stdout":"gcc grade_stats.c -o grade_stats.exe","stderr":"需要确认"}', 1),
+        )
+        await pilot.press("f5")
+        await pilot.pause(0.5)
 
     assert runner.approved == ["approval-1"]
 
